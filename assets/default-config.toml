@@ -1,0 +1,32 @@
+# RBT Sample Configuration
+version = "1"
+
+[global]
+log_level = "info"
+log_format = "text"
+research_mode = false
+
+[[links]]
+name = "secure-db-tunnel"
+listen_host = "127.0.0.1"
+listen_port = 5432
+target_host = "db.production.internal"
+target_port = 5432
+protocol = "tcp"
+tls = "auto"
+domain = "db.production.internal"
+enabled = true
+health_interval = "10s"
+tags = ["database", "production"]
+description = "Secure tunnel for PostgreSQL replication"
+
+[[links]]
+name = "metrics-collector"
+listen_host = "0.0.0.0"
+listen_port = 8125
+target_host = "stats.monitoring.internal"
+target_port = 8125
+protocol = "udp"
+tls = "false"
+enabled = true
+description = "UDP tunnel for StatsD metrics"

@@ -1,0 +1,11 @@
+[package]
+name = "rbt-audit"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+rbt-config = { path = "../rbt-config" }
+libc = "0.2"

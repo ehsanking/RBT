@@ -1,0 +1,5 @@
+{
+  "name": "RBT",
+  "description": "RBT is a research-driven and engineering-focused server-to-server tunneling platform built around rstun as the transport foundation. The project must be designed as a professional CLI-first system for lawful infrastructure connectivity, controlled experimentation, and technical evaluation.",
+  "requestFramePermissions": []
+}

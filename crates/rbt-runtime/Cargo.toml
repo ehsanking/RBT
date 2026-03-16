@@ -1,0 +1,23 @@
+[package]
+name = "rbt-runtime"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { version = "1.32", features = ["full"] }
+anyhow = "1.0"
+tracing = "0.1"
+rbt-config = { path = "../rbt-config" }
+quinn = "0.10"
+rustls = { version = "0.21", features = ["quic", "dangerous_configuration"] }
+rcgen = "0.11"
+rand = "0.8"
+sha2 = "0.10"
+bytes = "1.0"
+chacha20poly1305 = "0.10"
+chacha20 = "0.9"
+aead = "0.5"
+hex = "0.4"
+nix = { version = "0.27", features = ["fs", "net"] }
+libc = "0.2"

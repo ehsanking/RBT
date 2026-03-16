@@ -1,0 +1,136 @@
+{
+  "dns_manager": {
+    "test_domains": [
+      "google.com",
+      "cloudflare.com",
+      "microsoft.com",
+      "amazon.com",
+      "github.com",
+      "stackoverflow.com",
+      "wikipedia.org",
+      "reddit.com",
+      "twitter.com",
+      "facebook.com"
+    ],
+    "timeout": 5.0,
+    "max_concurrent": 50,
+    "reliability_threshold": 0.95,
+    "preferred_countries": ["US", "CA", "GB", "DE", "NL", "FR", "CH", "SE", "NO"],
+    "monitoring_interval": 300,
+    "emergency_countries": ["RU", "CN", "IR", "IN", "BR", "JP", "KR", "SG"]
+  },
+  
+  "dns_tunnel": {
+    "default_socks_port": 9050,
+    "server_port": 53,
+    "timeout": 30,
+    "mtu": 1500,
+    "dns_server": "1.1.1.1",
+    "tunnel_domains": ["t", "dns", "tunnel", "secure"],
+    "key_rotation_interval": 86400
+  },
+  
+  "iran_testing": {
+    "blocked_domains": [
+      "youtube.com",
+      "facebook.com", 
+      "twitter.com",
+      "telegram.org",
+      "instagram.com",
+      "netflix.com",
+      "spotify.com",
+      "medium.com"
+    ],
+    "dns_poisoning_ips": [
+      "10.10.34.34",
+      "10.10.34.35", 
+      "127.0.0.1",
+      "0.0.0.0"
+    ],
+    "test_protocols": [
+      "dns_over_tls",
+      "dns_over_https", 
+      "dnstt",
+      "shadowsocks",
+      "v2ray"
+    ]
+  },
+  
+  "performance_metrics": {
+    "latency_thresholds": {
+      "excellent": 20,
+      "good": 50,
+      "acceptable": 100,
+      "degraded": 200,
+      "critical": 500
+    },
+    "success_rate_thresholds": {
+      "excellent": 0.95,
+      "good": 0.80,
+      "acceptable": 0.60,
+      "poor": 0.40
+    },
+    "stability_factors": {
+      "latency_weight": 0.4,
+      "success_rate_weight": 0.3,
+      "dnssec_weight": 0.15,
+      "consistency_weight": 0.15
+    }
+  },
+  
+  "failover": {
+    "monitoring_interval": 300,
+    "max_failures": 3,
+    "failover_timeout": 60,
+    "emergency_retest_interval": 1800,
+    "backup_dns_count": 5
+  },
+  
+  "logging": {
+    "level": "INFO",
+    "file": "dns_manager.log",
+    "max_size": "10MB",
+    "backup_count": 5,
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  },
+  
+  "security": {
+    "dnssec_preferred": true,
+    "encrypted_dns_preferred": true,
+    "key_rotation": true,
+    "tunnel_encryption": "chacha20-poly1305",
+    "authentication_timeout": 30
+  },
+  
+  "network": {
+    "test_timeout": 5.0,
+    "max_retries": 3,
+    "retry_delay": 1.0,
+    "concurrent_tests": 50,
+    "bandwidth_limit": "unlimited"
+  },
+  
+  "regions": {
+    "north_america": ["US", "CA", "MX"],
+    "europe": ["GB", "DE", "FR", "NL", "CH", "SE", "NO", "FI", "DK"],
+    "asia_pacific": ["JP", "KR", "SG", "HK", "AU", "NZ", "IN"],
+    "middle_east": ["IR", "TR", "AE", "SA", "IL", "JO"],
+    "south_america": ["BR", "AR", "CL", "CO", "PE"],
+    "africa": ["ZA", "NG", "EG", "KE", "MA"],
+    "censorship_resistant": ["RU", "CN", "IR", "VN", "TH"]
+  },
+  
+  "censorship_detection": {
+    "dns_poisoning_check": true,
+    "tcp_rst_detection": true,
+    "sni_filtering_check": true,
+    "dpi_detection": true,
+    "fallback_protocols": [
+      "dnstt",
+      "shadowsocks",
+      "v2ray",
+      "wireguard",
+      "openvpn"
+    ]
+  }
+}

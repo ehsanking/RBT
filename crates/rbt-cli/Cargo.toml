@@ -1,0 +1,18 @@
+[package]
+name = "rbt-cli"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+tokio = { version = "1.32", features = ["full", "rt-multi-thread"] }
+anyhow = "1.0"
+rbt-config = { path = "../rbt-config" }
+rbt-runtime = { path = "../rbt-runtime" }
+rbt-observability = { path = "../rbt-observability" }
+rbt-cert = { path = "../rbt-cert" }
+rbt-service = { path = "../rbt-service" }
+rbt-audit = { path = "../rbt-audit" }
+rbt-research-tcr = { path = "../rbt-research-tcr" }
+rbt-discovery-dpd = { path = "../rbt-discovery-dpd" }

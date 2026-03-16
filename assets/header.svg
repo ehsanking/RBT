@@ -1,0 +1,6 @@
+<svg width="800" height="200" viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg">
+  <rect width="800" height="200" fill="#0a0a0a"/>
+  <path d="M100 50 L700 50 L700 150 L100 150 Z" stroke="#10b981" stroke-width="4" fill="none"/>
+  <path d="M150 100 L650 100" stroke="#06b6d4" stroke-width="8" stroke-dasharray="20 20"/>
+  <text x="400" y="115" font-family="Arial, sans-serif" font-size="48" fill="white" text-anchor="middle" font-weight="bold">RBT TUNNEL ORCHESTRATOR</text>
+</svg>

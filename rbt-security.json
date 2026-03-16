@@ -1,0 +1,7 @@
+{
+  "jwtSecret": "5b9417ea856337457cdd63e7d4bf2af022bf1bca5e499eb3dc4f5b1ca3aa8c67f279739325183c61680f1f06b75600b10894812b58396cf9712aed28a93c3cae",
+  "jwtExpiresIn": "24h",
+  "bcryptRounds": 12,
+  "minPasswordLength": 8,
+  "requireStrongPassword": true
+}

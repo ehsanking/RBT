@@ -1,0 +1,28 @@
+[workspace]
+members = [
+    "crates/rbt-cli",
+    "crates/rbt-config",
+    "crates/rbt-runtime",
+    "crates/rbt-observability",
+    "crates/rbt-cert",
+    "crates/rbt-service",
+    "crates/rbt-core",
+    "crates/rbt-research-tcr",
+    "crates/rbt-discovery-dpd",
+    "crates/rbt-audit"
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.2"
+authors = ["EHSANKiNG"]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/EHSANKiNG/RBT"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

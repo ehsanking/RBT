@@ -1,0 +1,9 @@
+[package]
+name = "rbt-discovery-dpd"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
