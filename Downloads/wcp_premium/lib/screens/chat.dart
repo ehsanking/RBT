@@ -28,6 +28,7 @@ void registerChatScreen() {
         id: p['id'] is int ? p['id'] as int : int.tryParse('${p['id']}') ?? 0,
         name: (p['name'] ?? '').toString(),
       );
+  kScreens['chatStaff'] = (ctx, p) => const ChatStaffScreen();
 }
 
 // ── status → (color, soft, label) ───────────────────────────────
@@ -59,6 +60,7 @@ class _ChatInboxScreenState extends State<ChatInboxScreen> {
   List<Map<String, dynamic>> _items = const <Map<String, dynamic>>[];
   bool _loading = StoreApi.hasStore;
   bool _available = true;
+  bool _isManager = false;
   Timer? _poll;
 
   @override
@@ -84,6 +86,7 @@ class _ChatInboxScreenState extends State<ChatInboxScreen> {
         _items = r.list;
         _loading = false;
         _available = true;
+        _isManager = r.map['is_manager'] == true;
       });
     } else {
       setState(() {
@@ -114,6 +117,9 @@ class _ChatInboxScreenState extends State<ChatInboxScreen> {
             title: 'گفتگوی زنده',
             sub: '${Fmt.fa(openUnread)} پیام خوانده‌نشده',
             onBack: () => AppScope.of(context).pop(),
+            actions: _isManager
+                ? [IconBtn(name: 'users', onClick: () => AppScope.of(context).push('chatStaff'))]
+                : const <Widget>[],
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 6, 16, 12),
@@ -132,7 +138,7 @@ class _ChatInboxScreenState extends State<ChatInboxScreen> {
                     EmptyState(
                       icon: 'message',
                       title: 'ماژول گفتگو فعال نیست',
-                      message: 'از تنظیماتِ افزونه، «گفتگوی زنده» را روشن کنید.',
+                      message: 'از تنظیمات افزونه، «گفتگوی زنده» را روشن کنید.',
                     ),
                   ])
                 : _loading && _items.isEmpty
@@ -338,7 +344,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
       if (wasInternal) setState(() => _internal = false);
     } else {
       _input.text = text;
-      AppScope.of(context).showToast(r.error ?? 'ارسالِ پیام ناموفق بود', kind: 'error', icon: 'alert');
+      AppScope.of(context).showToast(r.error ?? 'ارسال پیام ناموفق بود', kind: 'error', icon: 'alert');
     }
   }
 
@@ -516,7 +522,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
                     child: _internal ? const Icon(Icons.check, size: 12, color: Color(0xFF0A0A0D)) : null,
                   ),
                   const SizedBox(width: 8),
-                  Text('یادداشتِ داخلی (نامرئی برای مشتری)',
+                  Text('یادداشت داخلی (نامرئی برای مشتری)',
                       style: TextStyle(
                           fontSize: 12,
                           color: _internal ? const Color(0xFFF59E0B) : c.tx2,
@@ -608,6 +614,314 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// Staff & departments — manager-only access model management.
+// ════════════════════════════════════════════════════════════════
+class ChatStaffScreen extends StatefulWidget {
+  const ChatStaffScreen({super.key});
+
+  @override
+  State<ChatStaffScreen> createState() => _ChatStaffScreenState();
+}
+
+class _ChatStaffScreenState extends State<ChatStaffScreen> {
+  bool _loading = true;
+  bool _forbidden = false;
+  List<Map<String, dynamic>> _staff = const <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _depts = const <Map<String, dynamic>>[];
+  final TextEditingController _newDept = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _newDept.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final StoreResult r = await StoreApi.chatStaff();
+    if (!mounted) return;
+    if (r.statusCode == 403) {
+      setState(() {
+        _forbidden = true;
+        _loading = false;
+      });
+      return;
+    }
+    setState(() {
+      _staff = (r.map['staff'] is List)
+          ? List<Map<String, dynamic>>.from((r.map['staff'] as List).whereType<Map>().map((e) => Map<String, dynamic>.from(e)))
+          : const <Map<String, dynamic>>[];
+      _depts = (r.map['departments'] is List)
+          ? List<Map<String, dynamic>>.from((r.map['departments'] as List).whereType<Map>().map((e) => Map<String, dynamic>.from(e)))
+          : const <Map<String, dynamic>>[];
+      _loading = false;
+    });
+  }
+
+  String _deptName(int id) {
+    for (final d in _depts) {
+      if (((d['id'] ?? 0) as num).toInt() == id) return (d['name'] ?? '').toString();
+    }
+    return '#$id';
+  }
+
+  Future<void> _addDept() async {
+    final String name = _newDept.text.trim();
+    if (name.isEmpty) return;
+    _newDept.clear();
+    final StoreResult r = await StoreApi.chatCreateDepartment(name);
+    if (!mounted) return;
+    if (r.ok) {
+      await _load();
+    } else {
+      AppScope.of(context).showToast(r.error ?? 'ساخت دپارتمان ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
+
+  Future<void> _deleteDept(int id) async {
+    final StoreResult r = await StoreApi.chatDeleteDepartment(id);
+    if (!mounted) return;
+    if (r.ok) _load();
+  }
+
+  Future<void> _editStaff(Map<String, dynamic> s) async {
+    final bool? saved = await showWcpSheet<bool>(
+      context,
+      title: (s['name'] ?? '').toString(),
+      child: _StaffEditSheet(staff: s, departments: _depts),
+    );
+    if (saved == true && mounted) _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Container(
+      color: c.bg0,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          WcpAppBar(
+            title: 'کارکنان و دپارتمان‌ها',
+            sub: 'دسترسی هر کارمند به گفتگوها',
+            onBack: () => AppScope.of(context).pop(),
+          ),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _forbidden
+                    ? ListView(padding: const EdgeInsets.only(top: 30), children: const [
+                        EmptyState(
+                          icon: 'shield',
+                          title: 'دسترسی محدود',
+                          message: 'فقط مدیر می‌تواند دپارتمان‌ها و دسترسی کارکنان را تنظیم کند.',
+                        ),
+                      ])
+                    : ListView(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                        children: [
+                          _sectionTitle(context, 'دپارتمان‌ها'),
+                          WcpCard(
+                            pad: 12,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                for (final d in _depts)
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 4),
+                                    child: Row(
+                                      children: [
+                                        WcpIcon('layers', size: 16, color: c.tx3),
+                                        const SizedBox(width: 8),
+                                        Expanded(child: Text((d['name'] ?? '').toString(), style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600))),
+                                        IconBtn(name: 'x', size: 16, onClick: () => _deleteDept(((d['id'] ?? 0) as num).toInt())),
+                                      ],
+                                    ),
+                                  ),
+                                if (_depts.isEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 6),
+                                    child: Text('هنوز دپارتمانی ساخته نشده.', style: TextStyle(fontSize: 12.5, color: c.tx3)),
+                                  ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Container(
+                                        height: 42,
+                                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                                        alignment: Alignment.center,
+                                        decoration: BoxDecoration(color: c.bg1, borderRadius: BorderRadius.circular(10), border: Border.all(color: c.line)),
+                                        child: TextField(
+                                          controller: _newDept,
+                                          style: TextStyle(fontFamily: T.family, fontSize: 13, color: c.tx1),
+                                          decoration: InputDecoration(
+                                            isDense: true,
+                                            border: InputBorder.none,
+                                            contentPadding: EdgeInsets.zero,
+                                            hintText: 'نام دپارتمان جدید',
+                                            hintStyle: TextStyle(fontFamily: T.family, fontSize: 13, color: c.tx3),
+                                          ),
+                                          onSubmitted: (_) => _addDept(),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    WcpButton(variant: 'soft', icon: 'plus', label: 'افزودن', onClick: _addDept),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          _sectionTitle(context, 'کارکنان'),
+                          for (final s in _staff) ...[
+                            ListRow(
+                              icon: 'users',
+                              title: (s['name'] ?? '').toString(),
+                              sub: _staffSub(s),
+                              chevron: !(s['is_admin'] == true),
+                              onClick: s['is_admin'] == true ? null : () => _editStaff(s),
+                            ),
+                            const SizedBox(height: 8),
+                          ],
+                        ],
+                      ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _staffSub(Map<String, dynamic> s) {
+    if (s['is_admin'] == true) return 'مدیر اصلی (دسترسی کامل)';
+    final String role = (s['role'] ?? 'agent').toString();
+    if (role == 'manager') return 'مدیر (همه گفتگوها)';
+    final List<int> ids = (s['departments'] is List)
+        ? List<int>.from((s['departments'] as List).map((e) => (e as num).toInt()))
+        : const <int>[];
+    if (ids.isEmpty) return 'کارمند · فقط گفتگوهای خودش';
+    return 'کارمند · ${ids.map(_deptName).join('، ')}';
+  }
+
+  Widget _sectionTitle(BuildContext context, String t) {
+    final c = context.c;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8, right: 2),
+      child: Text(t, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: c.tx2)),
+    );
+  }
+}
+
+class _StaffEditSheet extends StatefulWidget {
+  const _StaffEditSheet({required this.staff, required this.departments});
+  final Map<String, dynamic> staff;
+  final List<Map<String, dynamic>> departments;
+
+  @override
+  State<_StaffEditSheet> createState() => _StaffEditSheetState();
+}
+
+class _StaffEditSheetState extends State<_StaffEditSheet> {
+  late String _role = (widget.staff['role'] ?? 'agent').toString() == 'manager' ? 'manager' : 'agent';
+  late Set<int> _picked = (widget.staff['departments'] is List)
+      ? {...(widget.staff['departments'] as List).map((e) => (e as num).toInt())}
+      : <int>{};
+  bool _saving = false;
+
+  Future<void> _save() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    final StoreResult r = await StoreApi.chatSetStaff(
+      ((widget.staff['id'] ?? 0) as num).toInt(),
+      _role,
+      _role == 'agent' ? _picked.toList() : const <int>[],
+    );
+    if (!mounted) return;
+    setState(() => _saving = false);
+    if (r.ok) {
+      Navigator.of(context).pop(true);
+    } else {
+      AppScope.of(context).showToast(r.error ?? 'ذخیره ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Segmented(
+          full: true,
+          value: _role,
+          onChange: (v) => setState(() => _role = v),
+          options: const [
+            (value: 'agent', label: 'کارمند (محدود)'),
+            (value: 'manager', label: 'مدیر (کامل)'),
+          ],
+        ),
+        if (_role == 'agent') ...[
+          const SizedBox(height: 14),
+          Text('دپارتمان‌های این کارمند:', style: TextStyle(fontSize: 12.5, color: c.tx2)),
+          const SizedBox(height: 8),
+          if (widget.departments.isEmpty)
+            Text('ابتدا یک دپارتمان بسازید.', style: TextStyle(fontSize: 12, color: c.tx3))
+          else
+            for (final d in widget.departments) ...[
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => setState(() {
+                  final int id = ((d['id'] ?? 0) as num).toInt();
+                  if (_picked.contains(id)) {
+                    _picked.remove(id);
+                  } else {
+                    _picked.add(id);
+                  }
+                }),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 7),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 18,
+                        height: 18,
+                        decoration: BoxDecoration(
+                          color: _picked.contains(((d['id'] ?? 0) as num).toInt()) ? c.accent : Colors.transparent,
+                          borderRadius: BorderRadius.circular(5),
+                          border: Border.all(color: _picked.contains(((d['id'] ?? 0) as num).toInt()) ? c.accent : c.tx3, width: 1.5),
+                        ),
+                        child: _picked.contains(((d['id'] ?? 0) as num).toInt())
+                            ? const Icon(Icons.check, size: 13, color: Colors.white)
+                            : null,
+                      ),
+                      const SizedBox(width: 10),
+                      Text((d['name'] ?? '').toString(), style: const TextStyle(fontSize: 14)),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+        ],
+        const SizedBox(height: 16),
+        WcpButton(
+          variant: 'primary',
+          full: true,
+          label: _saving ? 'در حال ذخیره…' : 'ذخیره',
+          onClick: _save,
+        ),
+      ],
     );
   }
 }

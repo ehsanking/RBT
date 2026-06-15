@@ -592,6 +592,25 @@ class StoreApi {
   static Future<StoreResult> chatRelayCredentials() =>
       wcpGet('/app/chat/relay-credentials');
 
+  // ── Chat access model (manager-only on the server) ──────────────
+  /// Departments + (on /staff) the staff list with each user's role + depts.
+  static Future<StoreResult> chatDepartments() => wcpGet('/app/chat/departments');
+  static Future<StoreResult> chatCreateDepartment(String name, {String? color}) =>
+      wcpPost('/app/chat/departments',
+          <String, dynamic>{'name': name, if (color != null) 'color': color});
+  static Future<StoreResult> chatDeleteDepartment(int id) =>
+      wcpPost('/app/chat/departments/$id/delete', const <String, dynamic>{});
+  static Future<StoreResult> chatStaff() => wcpGet('/app/chat/staff');
+  static Future<StoreResult> chatSetStaff(int userId, String role, List<int> departments) =>
+      wcpPost('/app/chat/staff',
+          <String, dynamic>{'user_id': userId, 'role': role, 'departments': departments});
+  /// Route a conversation to a department and/or a staff member.
+  static Future<StoreResult> chatAssign(int convId, {int? departmentId, int? staffId}) =>
+      wcpPost('/app/chat/conversations/$convId/assign', <String, dynamic>{
+        if (departmentId != null) 'department_id': departmentId,
+        if (staffId != null) 'staff_id': staffId,
+      });
+
   static Future<StoreResult> appBlocklist() => wcpGet('/app/blocklist');
   static Future<StoreResult> appBlock({required String type, required String action, required String value}) =>
       wcpPost('/app/blocklist', {'type': type, 'action': action, 'value': value});

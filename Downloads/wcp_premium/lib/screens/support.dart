@@ -66,7 +66,7 @@ class SupportHubScreen extends StatelessWidget {
         id: 'chat',
         icon: 'message',
         label: 'گفتگوی زنده',
-        sub: 'چتِ مستقیم با مشتریان',
+        sub: 'چت مستقیم با مشتریان',
         color: c.success,
         badge: 0,
         go: 'chatInbox',
