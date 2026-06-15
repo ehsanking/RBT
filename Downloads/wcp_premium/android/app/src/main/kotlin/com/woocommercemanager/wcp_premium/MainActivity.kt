@@ -2,6 +2,8 @@ package com.woocommercemanager.wcp_premium
 
 import android.Manifest
 import android.app.KeyguardManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -10,12 +12,14 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.provider.ContactsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.core.content.FileProvider
+import com.google.firebase.messaging.FirebaseMessaging
 import java.io.File
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -47,9 +51,20 @@ class MainActivity : FlutterActivity() {
     // Cafe Bazaar (Poolakey) in-app billing over raw AIDL — see BazaarBilling.
     private val billing: BazaarBilling by lazy { BazaarBilling(this) }
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        // Create the "chat" notification channel up-front so any FCM-triggered
+        // local notification (WcpFcmService) has a channel to post on.
+        ensureChatChannel(this)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+        val nativeCh = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+        // Hold a static ref so WcpFcmService can best-effort push onNewToken to
+        // Dart while the engine is alive (cleared in onDestroy).
+        nativeChannel = nativeCh
+        nativeCh
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "insertContact" -> insertContact(
@@ -62,6 +77,7 @@ class MainActivity : FlutterActivity() {
                         requestStartupPermissions()
                         result.success(true)
                     }
+                    "fcmToken" -> fcmToken(result)
                     "setTorch" -> setTorch(call.argument<Boolean>("on") ?: false, result)
                     "pickImage" -> pickImage(result)
                     "pickFile" -> pickFile(result)
@@ -418,6 +434,42 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /**
+     * Return the cached FCM registration token (saved by WcpFcmService.onNewToken
+     * in SharedPreferences). If none is cached yet, request one from
+     * FirebaseMessaging as a fallback, cache it, and complete with it. Never
+     * throws — completes with null on any failure so Dart can skip registration.
+     */
+    private fun fcmToken(result: MethodChannel.Result) {
+        try {
+            val cached = getSharedPreferences(WcpFcmService.PREFS, Context.MODE_PRIVATE)
+                .getString(WcpFcmService.KEY_FCM_TOKEN, null)
+            if (!cached.isNullOrEmpty()) {
+                result.success(cached)
+                return
+            }
+            FirebaseMessaging.getInstance().token
+                .addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        val tok = task.result
+                        if (!tok.isNullOrEmpty()) {
+                            try {
+                                getSharedPreferences(WcpFcmService.PREFS, Context.MODE_PRIVATE)
+                                    .edit()
+                                    .putString(WcpFcmService.KEY_FCM_TOKEN, tok)
+                                    .apply()
+                            } catch (e: Exception) { /* ignore */ }
+                        }
+                        result.success(tok)
+                    } else {
+                        result.success(null)
+                    }
+                }
+        } catch (e: Exception) {
+            result.success(null)
+        }
+    }
+
     private fun keyguard(): KeyguardManager =
         getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
 
@@ -463,6 +515,60 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         billing.disconnect()
+        if (nativeChannel != null) nativeChannel = null
         super.onDestroy()
+    }
+
+    companion object {
+        /** The "chat" notification channel id (shared with WcpFcmService). */
+        const val CHAT_CHANNEL_ID = "chat"
+
+        /** Live reference to the `wcp/native` channel while the engine is alive,
+         *  so WcpFcmService can best-effort forward a fresh token to Dart. */
+        @Volatile
+        var nativeChannel: MethodChannel? = null
+
+        /**
+         * Create the "chat" NotificationChannel if it doesn't exist (API 26+).
+         * Safe to call repeatedly — the system ignores a re-create. Idempotent so
+         * both MainActivity.onCreate and WcpFcmService (push while app dead) can call it.
+         */
+        fun ensureChatChannel(context: Context) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            try {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                if (nm.getNotificationChannel(CHAT_CHANNEL_ID) != null) return
+                val channel = NotificationChannel(
+                    CHAT_CHANNEL_ID,
+                    "گفتگو",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "اعلان پیام‌های گفتگوی زنده"
+                    val sound = chatSoundUri(context)
+                    if (sound != null) {
+                        setSound(
+                            sound,
+                            android.media.AudioAttributes.Builder()
+                                .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
+                                .build()
+                        )
+                    }
+                }
+                nm.createNotificationChannel(channel)
+            } catch (e: Exception) {
+                // ignore — a missing channel only means default channel behaviour.
+            }
+        }
+
+        /**
+         * The user's chosen chat notification sound (BATCH 2 setting
+         * `chat_notif_sound`, stored by Flutter shared_preferences under the
+         * "flutter." prefix). We have no bundled custom tones yet, so this returns
+         * null (= the channel/system default sound). The hook stays here so a real
+         * bundled raw resource can be mapped later without touching callers.
+         */
+        fun chatSoundUri(context: Context): Uri? {
+            return null
+        }
     }
 }

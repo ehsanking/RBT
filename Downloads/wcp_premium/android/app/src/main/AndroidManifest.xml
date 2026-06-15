@@ -51,6 +51,22 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/provider_paths" />
         </provider>
+        <!-- FCM push (BATCH 5): content-free background push. The service receives
+             the DATA-ONLY message { type:"chat_changed", tenant, version } and
+             posts a generic LOCAL «پیام جدید گفتگو» notification on the "chat"
+             channel (no bodies fetched here — tapping opens the app -> chat). -->
+        <service
+            android:name=".WcpFcmService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT"/>
+            </intent-filter>
+        </service>
+        <!-- Default channel for any notification Firebase posts without an
+             explicit channel; we also create "chat" in MainActivity.onCreate. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="chat" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

@@ -646,6 +646,14 @@ class StoreApi {
     }
   }
 
+  /// Register this device's FCM token for content-free background push. The
+  /// plugin forwards it to the central relay (server-to-server with the push
+  /// secret); central then sends a DATA-ONLY `chat_changed` push on each signal.
+  /// Privacy: only {token, platform} leave the device — never message bodies.
+  static Future<StoreResult> chatRegisterDevice(String token) =>
+      wcpPost('/app/chat/register-device',
+          <String, dynamic>{'token': token, 'platform': 'android'});
+
   // ── Chat access model (manager-only on the server) ──────────────
   /// Departments + (on /staff) the staff list with each user's role + depts.
   static Future<StoreResult> chatDepartments() => wcpGet('/app/chat/departments');

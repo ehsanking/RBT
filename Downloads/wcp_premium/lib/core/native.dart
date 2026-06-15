@@ -147,6 +147,19 @@ class Native {
     }
   }
 
+  /// The device's FCM registration token (cached natively by WcpFcmService;
+  /// requested from FirebaseMessaging as a fallback). Returns null/empty when
+  /// FCM is unavailable so callers can skip device registration. Best-effort —
+  /// never throws.
+  static Future<String?> fcmToken() async {
+    try {
+      final String? t = await _ch.invokeMethod<String>('fcmToken');
+      return (t == null || t.isEmpty) ? null : t;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Hand a local file (already in app-private storage, e.g. a temp dir) to the
   /// Android system share/save sheet (Intent.ACTION_SEND wrapped in a chooser),
   /// so the USER picks where it goes — Files, Drive, a messenger, etc. The file
