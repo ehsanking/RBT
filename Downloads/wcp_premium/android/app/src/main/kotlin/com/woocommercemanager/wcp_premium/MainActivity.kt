@@ -76,6 +76,11 @@ class MainActivity : FlutterActivity() {
                         call.argument<String>("mime") ?: "application/octet-stream",
                         result
                     )
+                    "shareFile" -> shareFile(
+                        call.argument<String>("path") ?: "",
+                        call.argument<String>("mime") ?: "application/octet-stream",
+                        result
+                    )
                     "biometricAvailable" -> result.success(deviceSecure())
                     "biometricAuthenticate" -> {
                         val reason = call.argument<String>("reason")
@@ -322,6 +327,44 @@ class MainActivity : FlutterActivity() {
             }
         } catch (e: Exception) {
             result.error("save_failed", e.message, null)
+        }
+    }
+
+    /**
+     * Hand a local file to the system share / "save anywhere" sheet
+     * (Intent.ACTION_SEND inside Intent.createChooser) so the USER chooses the
+     * destination (Files, Drive, a messenger, etc.). The file is shared through
+     * our FileProvider (authority "<applicationId>.fileprovider") as a content://
+     * URI with FLAG_GRANT_READ_URI_PERMISSION — no storage permission and no pub
+     * plugin needed. Returns true when the chooser launched, false otherwise.
+     */
+    private fun shareFile(path: String, mime: String, result: MethodChannel.Result) {
+        try {
+            if (path.isEmpty()) {
+                result.success(false)
+                return
+            }
+            val file = File(path)
+            if (!file.exists()) {
+                result.success(false)
+                return
+            }
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = if (mime.isNotEmpty()) mime else "*/*"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(send, "ذخیره یا اشتراک‌گذاری").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(chooser)
+            result.success(true)
+        } catch (e: android.content.ActivityNotFoundException) {
+            result.success(false)
+        } catch (e: Exception) {
+            result.success(false)
         }
     }
 

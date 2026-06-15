@@ -374,7 +374,13 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
   String? _recPath;
 
   final TextEditingController _input = TextEditingController();
+  final FocusNode _inputFocus = FocusNode();
   final ScrollController _scroll = ScrollController();
+
+  // ── BATCH3 #5 canned replies (server-side chat settings) ──────────
+  // Loaded once from StoreApi.chatConfig() -> settings.canned_replies and
+  // cached locally; the quick-reply sheet inserts/edits them + saves back.
+  List<Map<String, dynamic>> _canned = const <Map<String, dynamic>>[];
 
   @override
   void initState() {
@@ -386,7 +392,35 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
       // Start on the direct-WP fallback cadence; the beacon disables it on success.
       _poll = Timer.periodic(const Duration(seconds: 4), (_) => _load(silent: true));
       _initBeacon();
+      _loadCanned();
     }
+  }
+
+  /// Fetch the canned replies once from chat settings and cache them. Silent on
+  /// failure — the quick-reply sheet just shows the empty state + add button.
+  Future<void> _loadCanned() async {
+    final StoreResult r = await StoreApi.chatConfig();
+    if (!mounted || !r.ok) return;
+    setState(() => _canned = _parseCanned(r.map));
+  }
+
+  /// Extract the canned-replies list from a chatConfig() response map. The list
+  /// lives under settings.canned_replies as [{title,text}]; we normalize each
+  /// entry to non-null strings and drop blanks.
+  List<Map<String, dynamic>> _parseCanned(Map<String, dynamic> m) {
+    final dynamic settings = m['settings'];
+    final dynamic raw =
+        (settings is Map) ? settings['canned_replies'] : m['canned_replies'];
+    if (raw is! List) return const <Map<String, dynamic>>[];
+    final List<Map<String, dynamic>> out = <Map<String, dynamic>>[];
+    for (final dynamic e in raw) {
+      if (e is! Map) continue;
+      final String title = (e['title'] ?? '').toString().trim();
+      final String text = (e['text'] ?? '').toString().trim();
+      if (title.isEmpty && text.isEmpty) continue;
+      out.add(<String, dynamic>{'title': title, 'text': text});
+    }
+    return out;
   }
 
   /// Fetch relay creds ONCE; if usable, start the central beacon (3s) and stop
@@ -442,6 +476,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
     _recorder.dispose();
     _restoreFab?.call();
     _input.dispose();
+    _inputFocus.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -667,14 +702,6 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
   bool get _hasContact =>
       _custEmail.isNotEmpty || _custPhone.isNotEmpty || _custDept.isNotEmpty;
 
-  /// One-line summary shown under the header (phone preferred, else email).
-  String get _contactHint {
-    if (_custPhone.isNotEmpty) return Fmt.fa(_custPhone);
-    if (_custEmail.isNotEmpty) return _custEmail;
-    if (_custDept.isNotEmpty) return _custDept;
-    return '';
-  }
-
   Future<void> _openOverflow() async {
     final String action = await showWcpSheet<String>(
           context,
@@ -743,6 +770,51 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
         department: _custDept,
       ),
     );
+  }
+
+  // ── BATCH3 #5 — canned replies sheet (insert / manage) ─────────────
+  /// Open the quick-reply sheet. Tapping a reply inserts its text into the
+  /// composer (focused, ready to send); a «مدیریت» mode lets the manager
+  /// create/edit/delete replies, saved back to chat settings via chatSaveConfig.
+  Future<void> _openCanned() async {
+    final List<Map<String, dynamic>>? result =
+        await showWcpSheet<List<Map<String, dynamic>>>(
+      context,
+      title: 'پاسخ‌های آماده',
+      child: _CannedSheet(
+        replies: _canned,
+        onInsert: _insertCanned,
+        onSave: _saveCanned,
+      ),
+    );
+    // The sheet returns the updated list when a save happened so we cache it.
+    if (result != null && mounted) setState(() => _canned = result);
+  }
+
+  /// Drop the chosen reply text into the composer and focus it, ready to send.
+  void _insertCanned(String text) {
+    final String t = text.trim();
+    if (t.isEmpty) return;
+    _input.text = t;
+    _input.selection = TextSelection.collapsed(offset: _input.text.length);
+    setState(() {});
+    _inputFocus.requestFocus();
+  }
+
+  /// Persist the canned-replies list to chat settings. Returns true on success.
+  Future<bool> _saveCanned(List<Map<String, dynamic>> list) async {
+    final StoreResult r =
+        await StoreApi.chatSaveConfig(<String, dynamic>{'canned_replies': list});
+    if (!mounted) return false;
+    if (r.ok) {
+      setState(() => _canned = _parseCanned(r.map).isNotEmpty
+          ? _parseCanned(r.map)
+          : List<Map<String, dynamic>>.from(list));
+    } else {
+      AppScope.of(context)
+          .showToast(r.error ?? 'ذخیره پاسخ‌ها ناموفق بود', kind: 'error', icon: 'alert');
+    }
+    return r.ok;
   }
 
   Future<void> _toggleBlock() async {
@@ -822,33 +894,6 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
               ),
             ],
           ),
-          if (_hasContact && _contactHint.isNotEmpty)
-            GestureDetector(
-              onTap: _openContactSheet,
-              behavior: HitTestBehavior.opaque,
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    WcpIcon(
-                        _custPhone.isNotEmpty
-                            ? 'phone'
-                            : (_custEmail.isNotEmpty ? 'email' : 'layers'),
-                        size: 12,
-                        color: c.tx3),
-                    const SizedBox(width: 6),
-                    Flexible(
-                      child: Text(_contactHint,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 11.5, color: c.tx3)),
-                    ),
-                  ],
-                ),
-              ),
-            ),
           Expanded(
             child: _loading && _msgs.isEmpty
                 ? const Center(child: CircularProgressIndicator())
@@ -904,10 +949,42 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
       );
     }
 
+    // Outside-the-bubble download controls — one small icon per downloadable
+    // attachment, rendered as a SIBLING of the bubble in the message row (#1).
+    // Tapping one fetches the gated bytes and opens the system save/share sheet
+    // so the user picks the destination (#2). Voice + file + image alike.
+    final List<Widget> dlBtns = <Widget>[
+      for (final Map<String, dynamic> a in atts)
+        _AttachmentDownloadBtn(
+          messageId: ((a['mid'] ?? 0) as num).toInt(),
+          index: ((a['i'] ?? 0) as num).toInt(),
+          kind: (a['kind'] ?? 'file').toString(),
+          name: (a['name'] ?? 'فایل').toString(),
+          ext: (a['ext'] ?? '').toString(),
+        ),
+    ];
+    final Widget? dlColumn = dlBtns.isEmpty
+        ? null
+        : Padding(
+            padding: EdgeInsets.only(left: isStaff ? 6 : 0, right: isStaff ? 0 : 6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (int d = 0; d < dlBtns.length; d++) ...[
+                  if (d > 0) const SizedBox(height: 6),
+                  dlBtns[d],
+                ],
+              ],
+            ),
+          );
+
     return Row(
       textDirection: TextDirection.ltr,
       mainAxisAlignment: isStaff ? MainAxisAlignment.start : MainAxisAlignment.end,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // staff bubble: download icon sits to the RIGHT of the bubble.
+        if (isStaff && dlColumn != null) dlColumn,
         ConstrainedBox(
           constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.82),
           child: Column(
@@ -979,6 +1056,8 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
             ],
           ),
         ),
+        // customer bubble: download icon sits to the LEFT of the bubble.
+        if (!isStaff && dlColumn != null) dlColumn,
       ],
     );
   }
@@ -1028,6 +1107,9 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
               _roundBtn(context, 'clip', (_uploading || _sending) ? null : _pickAndSend,
                   label: 'پیوست فایل'),
               const SizedBox(width: 6),
+              _roundBtn(context, 'reply', (_uploading || _sending) ? null : _openCanned,
+                  label: 'پاسخ‌های آماده'),
+              const SizedBox(width: 6),
               Expanded(
                 child: Container(
                   constraints: const BoxConstraints(minHeight: 46),
@@ -1040,6 +1122,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
                   ),
                   child: TextField(
                     controller: _input,
+                    focusNode: _inputFocus,
                     onChanged: (_) => setState(() {}),
                     onSubmitted: (_) => _send(),
                     textInputAction: TextInputAction.send,
@@ -1196,24 +1279,30 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
     final int durSec = ((a['dur'] ?? 0) as num).toInt();
     final String ext = (a['ext'] ?? '').toString();
     if (kind == 'image') {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxHeight: 220, maxWidth: 240),
-          child: Image.network(
-            StoreApi.chatAttachmentUrl(mid, idx),
-            headers: StoreApi.mediaAuthHeaders,
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => _FileChip(
-                messageId: mid, index: idx, name: name, size: size, ext: ext, onAccent: isStaff, icon: 'image'),
-            loadingBuilder: (ctx, child, p) => p == null
-                ? child
-                : Container(
-                    width: 160,
-                    height: 120,
-                    alignment: Alignment.center,
-                    child: const SizedBox(
-                        width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
+      // Smaller thumbnail (#3): max ~190×200, cover-cropped, rounded; tapping it
+      // opens the image full-size in a dialog. The save control lives OUTSIDE the
+      // bubble (#1) so there is no in-bubble download button here.
+      return GestureDetector(
+        onTap: () => _openImageViewer(context, mid, idx),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 200, maxWidth: 190),
+            child: Image.network(
+              StoreApi.chatAttachmentUrl(mid, idx),
+              headers: StoreApi.mediaAuthHeaders,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => _FileChip(
+                  messageId: mid, index: idx, name: name, size: size, ext: ext, onAccent: isStaff, icon: 'image'),
+              loadingBuilder: (ctx, child, p) => p == null
+                  ? child
+                  : Container(
+                      width: 160,
+                      height: 120,
+                      alignment: Alignment.center,
+                      child: const SizedBox(
+                          width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
+            ),
           ),
         ),
       );
@@ -1223,6 +1312,37 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
     }
     return _FileChip(
         messageId: mid, index: idx, name: name, size: size, ext: ext, onAccent: isStaff, icon: 'file');
+  }
+
+  /// Open an image attachment full-size in a tap-to-dismiss dialog (#3). Uses the
+  /// same gated URL + auth headers as the thumbnail; pinch/scroll-free, just a
+  /// big preview the staff can read.
+  void _openImageViewer(BuildContext context, int mid, int idx) {
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withAlpha(0xE0),
+      builder: (ctx) => GestureDetector(
+        onTap: () => Navigator.of(ctx).pop(),
+        child: Container(
+          alignment: Alignment.center,
+          padding: const EdgeInsets.all(12),
+          child: InteractiveViewer(
+            minScale: 1,
+            maxScale: 4,
+            child: Image.network(
+              StoreApi.chatAttachmentUrl(mid, idx),
+              headers: StoreApi.mediaAuthHeaders,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => const Icon(Icons.broken_image, color: Colors.white54, size: 64),
+              loadingBuilder: (c2, child, p) => p == null
+                  ? child
+                  : const SizedBox(
+                      width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _closedFooter(BuildContext context) {
@@ -1582,7 +1702,6 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
   StreamSubscription<PlayerState>? _sub;
   bool _loading = false;
   bool _playing = false;
-  bool _saving = false; // download-to-Downloads in flight.
   // BytesSource produced no sound on Android; instead the gated bytes are
   // written to a temp file once and replayed from disk via DeviceFileSource.
   String? _localPath;
@@ -1650,49 +1769,6 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
     return Fmt.fa('$m:${r < 10 ? '0$r' : r}');
   }
 
-  /// Save the voice note to the device's public Downloads via the native
-  /// bridge (no pub.dev dep). Reuses the already-cached temp file when present.
-  Future<void> _download() async {
-    if (_loading || _saving) return;
-    final AppScope nav = AppScope.of(context);
-    setState(() => _saving = true);
-    try {
-      String? src = _localPath;
-      if (src == null) {
-        final Uint8List? b =
-            await StoreApi.chatAttachmentBytes(widget.messageId, widget.index);
-        if (!mounted) return;
-        if (b == null) {
-          setState(() => _saving = false);
-          nav.showToast('دریافت ویس ناموفق بود', kind: 'error', icon: 'alert');
-          return;
-        }
-        final Directory dir = await getTemporaryDirectory();
-        final String path =
-            '${dir.path}/wcp_play_${widget.messageId}_${widget.index}.m4a';
-        await File(path).writeAsBytes(b, flush: true);
-        if (!mounted) return;
-        _localPath = path;
-        src = path;
-      }
-      final String fname =
-          'voice_${widget.messageId}_${widget.index}.m4a';
-      final String? saved =
-          await Native.saveToDownloads(src, fname, mime: 'audio/mp4');
-      if (!mounted) return;
-      setState(() => _saving = false);
-      if (saved != null) {
-        nav.showToast('در پوشه دانلود ذخیره شد', kind: 'success', icon: 'check');
-      } else {
-        nav.showToast('ذخیره ویس ناموفق بود', kind: 'error', icon: 'alert');
-      }
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _saving = false);
-      nav.showToast('ذخیره ویس ناموفق بود', kind: 'error', icon: 'alert');
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final c = context.c;
@@ -1718,8 +1794,6 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
             WcpIcon('mic', size: 13, color: fg.withAlpha(0xAA)),
             const SizedBox(width: 4),
             Text(_fmtDur(widget.seconds), style: TextStyle(fontSize: 12, color: fg)),
-            const SizedBox(width: 6),
-            _DownloadBtn(fg: fg, busy: _saving, onTap: _download),
           ],
         ),
       ),
@@ -1770,49 +1844,7 @@ class _FileChipState extends State<_FileChip> {
   }
 
   /// Best-effort MIME from the file extension (the system viewer is forgiving).
-  String _mimeFor(String ext) {
-    switch (ext.toLowerCase().replaceAll('.', '')) {
-      case 'pdf':
-        return 'application/pdf';
-      case 'doc':
-        return 'application/msword';
-      case 'docx':
-        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-      case 'xls':
-        return 'application/vnd.ms-excel';
-      case 'xlsx':
-        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-      case 'ppt':
-        return 'application/vnd.ms-powerpoint';
-      case 'pptx':
-        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-      case 'zip':
-        return 'application/zip';
-      case 'rar':
-        return 'application/vnd.rar';
-      case 'txt':
-        return 'text/plain';
-      case 'csv':
-        return 'text/csv';
-      case 'jpg':
-      case 'jpeg':
-        return 'image/jpeg';
-      case 'png':
-        return 'image/png';
-      case 'gif':
-        return 'image/gif';
-      case 'webp':
-        return 'image/webp';
-      case 'mp3':
-        return 'audio/mpeg';
-      case 'm4a':
-        return 'audio/mp4';
-      case 'mp4':
-        return 'video/mp4';
-      default:
-        return 'application/octet-stream';
-    }
-  }
+  String _mimeFor(String ext) => _chatMimeForExt(ext);
 
   Future<void> _open() async {
     if (_busy) return;
@@ -1844,43 +1876,6 @@ class _FileChipState extends State<_FileChip> {
       if (!mounted) return;
       setState(() => _busy = false);
       nav.showToast('باز کردن فایل ناموفق بود', kind: 'error', icon: 'alert');
-    }
-  }
-
-  /// Fetch the gated bytes and SAVE them to the device's public Downloads via
-  /// the native bridge (no pub.dev dep). Toasts the outcome.
-  Future<void> _download() async {
-    if (_busy) return;
-    final AppScope nav = AppScope.of(context);
-    setState(() => _busy = true);
-    try {
-      final Uint8List? b =
-          await StoreApi.chatAttachmentBytes(widget.messageId, widget.index);
-      if (!mounted) return;
-      if (b == null) {
-        setState(() => _busy = false);
-        nav.showToast('دریافت فایل ناموفق بود', kind: 'error', icon: 'alert');
-        return;
-      }
-      final String fname = _safeName();
-      final Directory dir = await getTemporaryDirectory();
-      final String path = '${dir.path}/$fname';
-      await File(path).writeAsBytes(b, flush: true);
-      final String ext =
-          fname.contains('.') ? fname.split('.').last : widget.ext;
-      final String? saved =
-          await Native.saveToDownloads(path, fname, mime: _mimeFor(ext));
-      if (!mounted) return;
-      setState(() => _busy = false);
-      if (saved != null) {
-        nav.showToast('در پوشه دانلود ذخیره شد', kind: 'success', icon: 'check');
-      } else {
-        nav.showToast('ذخیره فایل ناموفق بود', kind: 'error', icon: 'alert');
-      }
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _busy = false);
-      nav.showToast('ذخیره فایل ناموفق بود', kind: 'error', icon: 'alert');
     }
   }
 
@@ -1921,8 +1916,6 @@ class _FileChipState extends State<_FileChip> {
                 ],
               ),
             ),
-            const SizedBox(width: 6),
-            _DownloadBtn(fg: fg, busy: _busy, onTap: _download),
           ],
         ),
       ),
@@ -1930,33 +1923,159 @@ class _FileChipState extends State<_FileChip> {
   }
 }
 
-// ── Small download icon button shared by file chips + voice bubbles ──
-class _DownloadBtn extends StatelessWidget {
-  const _DownloadBtn({required this.fg, required this.busy, required this.onTap});
-  final Color fg;
-  final bool busy;
-  final VoidCallback onTap;
+/// Best-effort MIME from a file extension (the system viewer/share sheet is
+/// forgiving). Shared by the file chip's open action + the outside-the-bubble
+/// download control.
+String _chatMimeForExt(String ext) {
+  switch (ext.toLowerCase().replaceAll('.', '')) {
+    case 'pdf':
+      return 'application/pdf';
+    case 'doc':
+      return 'application/msword';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'xls':
+      return 'application/vnd.ms-excel';
+    case 'xlsx':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case 'ppt':
+      return 'application/vnd.ms-powerpoint';
+    case 'pptx':
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    case 'zip':
+      return 'application/zip';
+    case 'rar':
+      return 'application/vnd.rar';
+    case 'txt':
+      return 'text/plain';
+    case 'csv':
+      return 'text/csv';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'png':
+      return 'image/png';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'mp3':
+      return 'audio/mpeg';
+    case 'm4a':
+      return 'audio/mp4';
+    case 'mp4':
+      return 'video/mp4';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+/// Outside-the-bubble download control (#1) — a small icon rendered BESIDE the
+/// bubble in the message row (not inside it). Tapping it fetches the gated
+/// attachment bytes, writes a temp file, then hands it to the system save/share
+/// sheet via Native.shareFile so the user picks the destination — Files / Drive
+/// / anywhere (#2). Works for file, voice AND image attachments. Toast only on
+/// failure. Holds its own busy state so multiple icons act independently.
+class _AttachmentDownloadBtn extends StatefulWidget {
+  const _AttachmentDownloadBtn({
+    required this.messageId,
+    required this.index,
+    required this.kind,
+    required this.name,
+    required this.ext,
+  });
+  final int messageId;
+  final int index;
+  final String kind;
+  final String name;
+  final String ext;
+
+  @override
+  State<_AttachmentDownloadBtn> createState() => _AttachmentDownloadBtnState();
+}
+
+class _AttachmentDownloadBtnState extends State<_AttachmentDownloadBtn> {
+  bool _busy = false;
+
+  /// A safe, extensioned local filename for the saved temp file.
+  String _safeName() {
+    if (widget.kind == 'voice') {
+      return 'voice_${widget.messageId}_${widget.index}.m4a';
+    }
+    String n = widget.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+    if (n.isEmpty) n = 'file_${widget.messageId}_${widget.index}';
+    if (!n.contains('.') && widget.ext.isNotEmpty) {
+      n = '$n.${widget.ext.replaceAll('.', '')}';
+    }
+    if (widget.kind == 'image' && !n.contains('.')) n = '$n.jpg';
+    return n;
+  }
+
+  String _mime() {
+    if (widget.kind == 'voice') return 'audio/mp4';
+    final String fname = _safeName();
+    final String ext = fname.contains('.') ? fname.split('.').last : widget.ext;
+    return _chatMimeForExt(ext);
+  }
+
+  Future<void> _save() async {
+    if (_busy) return;
+    final AppScope nav = AppScope.of(context);
+    setState(() => _busy = true);
+    try {
+      final Uint8List? b =
+          await StoreApi.chatAttachmentBytes(widget.messageId, widget.index);
+      if (!mounted) return;
+      if (b == null) {
+        setState(() => _busy = false);
+        nav.showToast('دریافت فایل ناموفق بود', kind: 'error', icon: 'alert');
+        return;
+      }
+      final String fname = _safeName();
+      final Directory dir = await getTemporaryDirectory();
+      final String path = '${dir.path}/$fname';
+      await File(path).writeAsBytes(b, flush: true);
+      if (!mounted) return;
+      final bool shared = await Native.shareFile(path, mime: _mime());
+      if (!mounted) return;
+      setState(() => _busy = false);
+      if (!shared) {
+        nav.showToast('ذخیره فایل ناموفق بود', kind: 'error', icon: 'alert');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      nav.showToast('ذخیره فایل ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final c = context.c;
     return Tooltip(
-      message: 'ذخیره در دانلود',
+      message: 'ذخیره فایل',
       child: Semantics(
-        label: 'ذخیره در دانلود',
+        label: 'ذخیره فایل',
         button: true,
-        enabled: !busy,
+        enabled: !_busy,
         child: GestureDetector(
-          onTap: busy ? null : onTap,
+          onTap: _busy ? null : _save,
           behavior: HitTestBehavior.opaque,
           child: Container(
-            width: 30,
-            height: 30,
+            width: 34,
+            height: 34,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: fg.withAlpha(0x1A),
-              borderRadius: BorderRadius.circular(8),
+              color: c.bg2,
+              shape: BoxShape.circle,
+              border: Border.all(color: c.line, width: 1),
             ),
-            child: WcpIcon('download', size: 16, color: fg.withAlpha(0xCC)),
+            child: _busy
+                ? SizedBox(
+                    width: 15,
+                    height: 15,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: c.tx2))
+                : WcpIcon('download', size: 16, color: c.tx2),
           ),
         ),
       ),
@@ -2148,6 +2267,261 @@ class _DeptPickerSheet extends StatelessWidget {
             );
           }),
       ],
+    );
+  }
+}
+
+// ── BATCH3 #5 — canned-replies sheet (insert + manage CRUD) ──────────
+// Two modes: a LIST that inserts a reply into the composer (via onInsert) and a
+// per-row edit/delete + «پاسخ جدید»; and an EDIT form (title + text). All
+// mutations persist via onSave (chatSaveConfig) and reflect after the round-trip.
+class _CannedSheet extends StatefulWidget {
+  const _CannedSheet({
+    required this.replies,
+    required this.onInsert,
+    required this.onSave,
+  });
+  final List<Map<String, dynamic>> replies;
+  final void Function(String text) onInsert;
+  final Future<bool> Function(List<Map<String, dynamic>> list) onSave;
+
+  @override
+  State<_CannedSheet> createState() => _CannedSheetState();
+}
+
+class _CannedSheetState extends State<_CannedSheet> {
+  late List<Map<String, dynamic>> _list = <Map<String, dynamic>>[
+    for (final Map<String, dynamic> e in widget.replies)
+      <String, dynamic>{
+        'title': (e['title'] ?? '').toString(),
+        'text': (e['text'] ?? '').toString(),
+      },
+  ];
+
+  // Edit-mode state. _editIndex == -1 means «add new»; null means list mode.
+  int? _editIndex;
+  final TextEditingController _title = TextEditingController();
+  final TextEditingController _text = TextEditingController();
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _text.dispose();
+    super.dispose();
+  }
+
+  void _startAdd() {
+    _title.text = '';
+    _text.text = '';
+    setState(() => _editIndex = -1);
+  }
+
+  void _startEdit(int i) {
+    _title.text = (_list[i]['title'] ?? '').toString();
+    _text.text = (_list[i]['text'] ?? '').toString();
+    setState(() => _editIndex = i);
+  }
+
+  Future<void> _commitEdit() async {
+    if (_saving) return;
+    final String title = _title.text.trim();
+    final String text = _text.text.trim();
+    if (text.isEmpty) {
+      AppScope.of(context)
+          .showToast('متن پاسخ نمی‌تواند خالی باشد', kind: 'error', icon: 'alert');
+      return;
+    }
+    final Map<String, dynamic> entry = <String, dynamic>{
+      'title': title.isEmpty ? text : title,
+      'text': text,
+    };
+    final List<Map<String, dynamic>> next =
+        List<Map<String, dynamic>>.from(_list);
+    if (_editIndex == -1 || _editIndex == null) {
+      next.add(entry);
+    } else {
+      next[_editIndex!] = entry;
+    }
+    setState(() => _saving = true);
+    final bool ok = await widget.onSave(next);
+    if (!mounted) return;
+    setState(() {
+      _saving = false;
+      if (ok) {
+        _list = next;
+        _editIndex = null;
+      }
+    });
+  }
+
+  Future<void> _delete(int i) async {
+    if (_saving) return;
+    final List<Map<String, dynamic>> next =
+        List<Map<String, dynamic>>.from(_list)..removeAt(i);
+    setState(() => _saving = true);
+    final bool ok = await widget.onSave(next);
+    if (!mounted) return;
+    setState(() {
+      _saving = false;
+      if (ok) _list = next;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    if (_editIndex != null) return _editForm(context);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_list.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 18),
+            child: Text('هنوز پاسخ آماده‌ای ندارید.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: c.tx3)),
+          )
+        else
+          for (int i = 0; i < _list.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  widget.onInsert((_list[i]['text'] ?? '').toString());
+                  Navigator.of(context).pop(_list);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: c.bg1,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: c.line, width: 1),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text((_list[i]['title'] ?? '').toString(),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontSize: 13.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: c.tx1)),
+                            const SizedBox(height: 2),
+                            Text((_list[i]['text'] ?? '').toString(),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(fontSize: 12, color: c.tx3)),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Semantics(
+                        label: 'ویرایش پاسخ',
+                        button: true,
+                        child: IconBtn(name: 'edit', size: 16, onClick: () => _startEdit(i)),
+                      ),
+                      const SizedBox(width: 6),
+                      Semantics(
+                        label: 'حذف پاسخ',
+                        button: true,
+                        child: IconBtn(name: 'trash', size: 16, onClick: () => _delete(i)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        const SizedBox(height: 4),
+        WcpButton(
+          variant: 'soft',
+          full: true,
+          icon: 'plus',
+          label: 'پاسخ جدید',
+          onClick: _startAdd,
+        ),
+        if (_list.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text('برای درج، روی هر پاسخ بزنید.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: c.tx3)),
+        ],
+      ],
+    );
+  }
+
+  Widget _editForm(BuildContext context) {
+    final c = context.c;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(_editIndex == -1 ? 'پاسخ جدید' : 'ویرایش پاسخ',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: c.tx2)),
+        const SizedBox(height: 12),
+        _field(context, controller: _title, hint: 'عنوان (اختیاری)', maxLines: 1),
+        const SizedBox(height: 10),
+        _field(context, controller: _text, hint: 'متن پاسخ', maxLines: 4),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: WcpButton(
+                variant: 'secondary',
+                full: true,
+                label: 'انصراف',
+                onClick: _saving ? null : () => setState(() => _editIndex = null),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: WcpButton(
+                variant: 'primary',
+                full: true,
+                label: _saving ? 'در حال ذخیره…' : 'ذخیره',
+                onClick: _saving ? null : _commitEdit,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _field(BuildContext context,
+      {required TextEditingController controller,
+      required String hint,
+      required int maxLines}) {
+    final c = context.c;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(
+        color: c.bg1,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: c.line, width: 1),
+      ),
+      child: TextField(
+        controller: controller,
+        minLines: 1,
+        maxLines: maxLines,
+        cursorColor: c.accent,
+        style: TextStyle(fontFamily: T.family, fontSize: 14, color: c.tx1),
+        decoration: InputDecoration(
+          isDense: true,
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(vertical: 10),
+          hintText: hint,
+          hintStyle: TextStyle(fontFamily: T.family, fontSize: 14, color: c.tx3),
+        ),
+      ),
     );
   }
 }

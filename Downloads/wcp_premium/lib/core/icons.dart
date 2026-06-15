@@ -55,6 +55,8 @@ const Map<String, String> kIconPaths = {
   'message': 'M21 12a8 8 0 0 1-11.5 7.2L3 21l1.8-6.5A8 8 0 1 1 21 12Z',
   // Rounded chat bubble with three dots — a friendlier «live chat» glyph for the FAB.
   'chatDots': 'M4 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-4 4v-4a2 2 0 0 1-1-1.7ZM8.5 9.5h.01M12 9.5h.01M15.5 9.5h.01',
+  // Curved reply arrow — the canned-replies quick-reply button in the composer.
+  'reply': 'M9 17l-5-5 5-5M4 12h9a7 7 0 0 1 7 7v1',
   // Envelope — customer email row + the header contact hint.
   'email': 'M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3.5 7l8.5 6 8.5-6',
   // Download — arrow into a tray (save file / voice to device Downloads).

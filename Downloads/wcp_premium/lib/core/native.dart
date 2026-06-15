@@ -146,4 +146,22 @@ class Native {
       return null;
     }
   }
+
+  /// Hand a local file (already in app-private storage, e.g. a temp dir) to the
+  /// Android system share/save sheet (Intent.ACTION_SEND wrapped in a chooser),
+  /// so the USER picks where it goes — Files, Drive, a messenger, etc. The file
+  /// is exposed through our FileProvider (authority "<applicationId>.fileprovider")
+  /// as a content:// URI with read permission; no storage permission, no pub.dev
+  /// dependency. Returns true when the chooser launched, false otherwise.
+  static Future<bool> shareFile(String path, {String mime = 'application/octet-stream'}) async {
+    try {
+      final bool? ok = await _ch.invokeMethod<bool>('shareFile', {
+        'path': path,
+        'mime': mime,
+      });
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
 }
