@@ -39,17 +39,23 @@ class StoreResult {
     this.total = 0,
   });
 
-  /// The list payload of a response. Handles BOTH shapes the API uses:
-  ///   • a bare top-level JSON array (wc/v3 list endpoints), and
+  /// The list payload of a response. Handles every shape the API uses:
+  ///   • a bare top-level JSON array (wc/v3 list endpoints),
   ///   • a `{ok, total, items:[…]}` envelope (the WC+ `/app/*` endpoints —
-  ///     tickets / qa / notifications / slider / …).
+  ///     tickets / qa / notifications / slider / …), and
+  ///   • the chat endpoints' `{conversations:[…]}` / `{messages:[…]}` envelopes.
   /// Anything else yields an empty list.
   List<Map<String, dynamic>> get list {
+    final Map? m = data is Map ? data as Map : null;
     final dynamic src = data is List
         ? data
-        : (data is Map && (data as Map)['items'] is List)
-            ? (data as Map)['items']
-            : null;
+        : (m != null && m['items'] is List)
+            ? m['items']
+            : (m != null && m['conversations'] is List)
+                ? m['conversations']
+                : (m != null && m['messages'] is List)
+                    ? m['messages']
+                    : null;
     if (src is List) {
       return List<Map<String, dynamic>>.from(
           src.whereType<Map>().map((e) => Map<String, dynamic>.from(e)));
@@ -588,9 +594,57 @@ class StoreApi {
       wcpPost('/app/chat/conversations/$id/status',
           <String, dynamic>{'status': status});
 
+  /// Block (or unblock) a customer's conversation. Manager-only on the server;
+  /// a blocked conversation rejects further customer sends/uploads. Returns the
+  /// map (`{ok, available, blocked: 0|1}`).
+  static Future<StoreResult> chatBlockConversation(int convId, bool blocked) =>
+      wcpPost('/app/chat/conversations/$convId/block',
+          <String, dynamic>{'blocked': blocked});
+
   /// Content-free relay credentials for the live beacon (central /s/changes).
   static Future<StoreResult> chatRelayCredentials() =>
       wcpGet('/app/chat/relay-credentials');
+
+  /// Content-free change beacon against the CENTRAL relay (NOT the merchant
+  /// store). A raw form POST to `{centralBase}/s/changes` whose ONLY credential
+  /// is [subscribeToken] — NEVER the WC keys/secret or the push secret. Privacy
+  /// guardrail: only the opaque subscribe-token + an integer version cross
+  /// central; all message bodies stay on the merchant WP.
+  ///
+  /// VERIFIED LIVE 2026-06: POST with form body `subscribe_token=<token>` →
+  /// 200 `{ok:true, version:N, changed:true, last_at:"…"}`. (A `token` field or
+  /// a Bearer header → 403 unauthorized; GET → 405.)
+  ///
+  /// Returns a small typed record: `(ok, version, changed)`. On any transport
+  /// error / non-2xx / non-JSON, returns `(ok:false, version:-1, changed:false)`
+  /// so callers fall back to the direct-WP timers without breaking.
+  static Future<({bool ok, int version, bool changed})> chatChanges(
+      String centralBase, String subscribeToken) async {
+    final String base = centralBase.replaceAll(RegExp(r'/+$'), '');
+    if (base.isEmpty || subscribeToken.isEmpty) {
+      return (ok: false, version: -1, changed: false);
+    }
+    try {
+      // Raw form POST to the ABSOLUTE central URL — no WC Basic auth header.
+      final http.Response r = await http.post(
+        Uri.parse('$base/s/changes'),
+        headers: const <String, String>{'Accept': 'application/json'},
+        body: <String, String>{'subscribe_token': subscribeToken},
+      ).timeout(const Duration(seconds: 12));
+      if (r.statusCode < 200 || r.statusCode >= 300) {
+        return (ok: false, version: -1, changed: false);
+      }
+      final dynamic d = jsonDecode(r.body);
+      if (d is! Map) return (ok: false, version: -1, changed: false);
+      final bool ok = d['ok'] == true;
+      final int version =
+          (d['version'] is num) ? (d['version'] as num).toInt() : -1;
+      final bool changed = d['changed'] == true;
+      return (ok: ok, version: version, changed: changed);
+    } catch (_) {
+      return (ok: false, version: -1, changed: false);
+    }
+  }
 
   // ── Chat access model (manager-only on the server) ──────────────
   /// Departments + (on /staff) the staff list with each user's role + depts.
@@ -610,6 +664,91 @@ class StoreApi {
         if (departmentId != null) 'department_id': departmentId,
         if (staffId != null) 'staff_id': staffId,
       });
+
+  // ── Live Chat P5: full config + attachments (file/voice) + delete ───────
+  /// Permanently delete a conversation + its messages + attachment files (manager).
+  static Future<StoreResult> chatDeleteConversation(int id) =>
+      wcpPost('/app/chat/conversations/$id/delete', const <String, dynamic>{});
+
+  /// Read the full widget config (appearance/texts/pre_chat/faq/display_rules/
+  /// attachments + the assignable WP roles). Returns `{settings, roles}`.
+  static Future<StoreResult> chatConfig() => wcpGet('/app/chat/config');
+
+  /// Save chat config. Pass the top-level `enabled` and/or any group
+  /// (appearance/texts/pre_chat/faq/display_rules/attachments) — the server
+  /// validates each via the shared sanitizer. Manager-only.
+  static Future<StoreResult> chatSaveConfig(Map<String, dynamic> values) =>
+      wcpPost('/app/chat/config', values);
+
+  /// Gated attachment URL (needs [mediaAuthHeaders] for in-app image/byte fetch).
+  static String chatAttachmentUrl(int messageId, int index) =>
+      _wcp('/app/chat/attachment/$messageId/$index');
+
+  /// Fetch a gated attachment's raw bytes (authenticated) — used to play voice
+  /// notes, whose gated URL the audio player cannot auth on its own.
+  static Future<Uint8List?> chatAttachmentBytes(int messageId, int index) async {
+    if (_siteUrl == null || _siteUrl!.isEmpty) return null;
+    try {
+      final http.Response r = await http
+          .get(Uri.parse(chatAttachmentUrl(messageId, index)), headers: mediaAuthHeaders)
+          .timeout(const Duration(seconds: 60));
+      if (r.statusCode >= 200 && r.statusCode < 300) return r.bodyBytes;
+    } catch (_) {}
+    return null;
+  }
+
+  /// Authorization-only header for fetching gated media (images/voice bytes)
+  /// via Image.network / a manual GET — same WC Basic auth, no Content-Type.
+  static Map<String, String> get mediaAuthHeaders {
+    final String k = _ck ?? '';
+    final String s = _cs ?? '';
+    return <String, String>{
+      'Authorization': 'Basic ${base64Encode(utf8.encode('$k:$s'))}',
+    };
+  }
+
+  /// Multipart upload to a conversation. Either [filePaths] (1..max, sent as
+  /// `file[]`) OR [voicePath] (+[voiceSeconds], sent as `voice`). [internal]
+  /// makes it a private note; [caption] is an optional text body.
+  static Future<StoreResult> chatUpload(
+    int convId, {
+    List<String> filePaths = const <String>[],
+    String? voicePath,
+    int voiceSeconds = 0,
+    bool internal = false,
+    String caption = '',
+  }) async {
+    if (_siteUrl == null || _siteUrl!.isEmpty) {
+      return const StoreResult(ok: false, error: 'فروشگاه متصل نیست.');
+    }
+    try {
+      final Uri uri =
+          Uri.parse(_wcp('/app/chat/conversations/$convId/upload'));
+      final http.MultipartRequest req = http.MultipartRequest('POST', uri);
+      req.headers['Authorization'] = mediaAuthHeaders['Authorization']!;
+      req.headers['Accept'] = 'application/json';
+      if (internal) req.fields['internal'] = '1';
+      if (caption.trim().isNotEmpty) req.fields['body'] = caption.trim();
+      if (voicePath != null && voicePath.isNotEmpty) {
+        req.fields['duration'] = '$voiceSeconds';
+        req.files.add(await http.MultipartFile.fromPath('voice', voicePath));
+      } else {
+        for (final String p in filePaths) {
+          req.files.add(await http.MultipartFile.fromPath('file[]', p));
+        }
+      }
+      if (req.files.isEmpty) {
+        return const StoreResult(ok: false, error: 'فایلی انتخاب نشد.');
+      }
+      final http.StreamedResponse s =
+          await req.send().timeout(const Duration(seconds: 90));
+      final http.Response r = await http.Response.fromStream(s);
+      return _parse(r);
+    } catch (e) {
+      return StoreResult(
+          ok: false, error: 'بارگذاری ناموفق بود (${e.runtimeType}).');
+    }
+  }
 
   static Future<StoreResult> appBlocklist() => wcpGet('/app/blocklist');
   static Future<StoreResult> appBlock({required String type, required String action, required String value}) =>

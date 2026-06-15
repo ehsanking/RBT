@@ -11,12 +11,21 @@
 //   chatThread → ChatConversationScreen (one conversation + composer)
 // ════════════════════════════════════════════════════════════════
 import 'dart:async';
+import 'dart:io';
 
+import 'package:audioplayers/audioplayers.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../theme/tokens.dart';
 import '../core/icons.dart';
 import '../core/fmt.dart';
+import '../core/jalali.dart';
+import '../core/native.dart';
 import '../nav/shell.dart';
 import '../services/store_api.dart';
 import '../widgets/ui.dart';
@@ -45,6 +54,26 @@ void registerChatScreen() {
   }
 }
 
+// ── message timestamp — mirrors the tickets «who · time» footer ─────
+// Parses the message `created_at` (MySQL datetime, e.g. '2026-06-15 23:39:55')
+// and renders a compact Persian label: just the time today, else Jalali date.
+// Uses the real clock (NOT the sample anchor) so live messages read correctly.
+String _msgTime(Object? createdAt) {
+  final String iso = (createdAt ?? '').toString().trim();
+  if (iso.isEmpty) return '';
+  final DateTime? dt = DateTime.tryParse(iso);
+  if (dt == null) return '';
+  final String hh = dt.hour.toString().padLeft(2, '0');
+  final String mm = dt.minute.toString().padLeft(2, '0');
+  final String time = '${Fmt.fa(hh)}:${Fmt.fa(mm)}';
+  final DateTime now = DateTime.now();
+  final bool sameDay =
+      dt.year == now.year && dt.month == now.month && dt.day == now.day;
+  if (sameDay) return time;
+  final List<int> j = Jalali.toJalali(dt.year, dt.month, dt.day);
+  return '${Fmt.fa(j[2])} ${Jalali.months[j[1] - 1]} · $time';
+}
+
 // ════════════════════════════════════════════════════════════════
 // Inbox — conversation list
 // ════════════════════════════════════════════════════════════════
@@ -61,20 +90,71 @@ class _ChatInboxScreenState extends State<ChatInboxScreen> {
   bool _loading = StoreApi.hasStore;
   bool _available = true;
   bool _isManager = false;
-  Timer? _poll;
+  Timer? _poll; // direct-WP fallback cadence (8s) — used until/unless the beacon takes over.
+
+  // ── ITEM13 near-real-time beacon (central /s/changes) ──────────────
+  // Privacy: only the opaque subscribe-token + an integer version cross central;
+  // all conversation bodies are still fetched from the merchant WP below.
+  Timer? _beacon; // lightweight ~3s central poll that gates the WP fetch.
+  String _central = '';
+  String _subToken = '';
+  int _lastVersion = -1; // last central version that triggered a WP fetch.
+  int _beaconFails = 0; // consecutive beacon errors → fall back to direct-WP.
 
   @override
   void initState() {
     super.initState();
     if (StoreApi.hasStore) {
+      // Immediate first WP fetch so the first paint is real.
       _load();
+      // Start on the direct-WP fallback cadence; the beacon disables it on success.
       _poll = Timer.periodic(const Duration(seconds: 8), (_) => _load(silent: true));
+      _initBeacon();
+    }
+  }
+
+  /// Fetch relay creds ONCE; if usable, start the central beacon (3s) and stop
+  /// the direct-WP timer. On any failure the direct-WP timer stays running.
+  Future<void> _initBeacon() async {
+    final StoreResult r = await StoreApi.chatRelayCredentials();
+    if (!mounted) return;
+    final String central = (r.map['central_base'] ?? '').toString().trim();
+    final String token = (r.map['subscribe_token'] ?? '').toString().trim();
+    if (!r.ok || central.isEmpty || token.isEmpty) return; // keep direct-WP timer.
+    _central = central;
+    _subToken = token;
+    // The beacon owns scheduling now — drop the fixed 8s WP timer.
+    _poll?.cancel();
+    _poll = null;
+    _beacon = Timer.periodic(const Duration(seconds: 3), (_) => _tickBeacon());
+  }
+
+  Future<void> _tickBeacon() async {
+    final ({bool ok, int version, bool changed}) c =
+        await StoreApi.chatChanges(_central, _subToken);
+    if (!mounted) return;
+    if (!c.ok) {
+      // Repeated failures → fall back to the direct-WP cadence (never break).
+      if (++_beaconFails >= 3) {
+        _beacon?.cancel();
+        _beacon = null;
+        _poll ??= Timer.periodic(
+            const Duration(seconds: 8), (_) => _load(silent: true));
+      }
+      return;
+    }
+    _beaconFails = 0;
+    // Only fetch bodies from WP when the version advanced (or first tick).
+    if (_lastVersion < 0 || c.version > _lastVersion) {
+      _lastVersion = c.version;
+      _load(silent: true);
     }
   }
 
   @override
   void dispose() {
     _poll?.cancel();
+    _beacon?.cancel();
     super.dispose();
   }
 
@@ -82,8 +162,15 @@ class _ChatInboxScreenState extends State<ChatInboxScreen> {
     final StoreResult r = await StoreApi.chatConversations(status: 'all');
     if (!mounted) return;
     if (r.ok && r.map['available'] != false) {
+      // The endpoint returns the list under `conversations` (NOT the `items`
+      // envelope StoreResult.list expects), so read it explicitly.
+      final List<Map<String, dynamic>> convs = (r.map['conversations'] is List)
+          ? List<Map<String, dynamic>>.from((r.map['conversations'] as List)
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e)))
+          : const <Map<String, dynamic>>[];
       setState(() {
-        _items = r.list;
+        _items = convs;
         _loading = false;
         _available = true;
         _isManager = r.map['is_manager'] == true;
@@ -133,30 +220,34 @@ class _ChatInboxScreenState extends State<ChatInboxScreen> {
             ),
           ),
           Expanded(
-            child: !_available
-                ? ListView(padding: const EdgeInsets.only(top: 30), children: const [
-                    EmptyState(
-                      icon: 'message',
-                      title: 'ماژول گفتگو فعال نیست',
-                      message: 'از تنظیمات افزونه، «گفتگوی زنده» را روشن کنید.',
-                    ),
-                  ])
-                : _loading && _items.isEmpty
-                    ? const Center(child: CircularProgressIndicator())
-                    : list.isEmpty
-                        ? ListView(padding: const EdgeInsets.only(top: 30), children: const [
-                            EmptyState(
-                              icon: 'message',
-                              title: 'گفتگویی نیست',
-                              message: 'در این بخش گفتگویی وجود ندارد.',
+            child: RefreshIndicator(
+              onRefresh: () => _load(),
+              child: !_available
+                  ? ListView(padding: const EdgeInsets.only(top: 30), children: const [
+                      EmptyState(
+                        icon: 'message',
+                        title: 'ماژول گفتگو فعال نیست',
+                        message: 'از تنظیمات افزونه، «گفتگوی زنده» را روشن کنید.',
+                      ),
+                    ])
+                  : _loading && _items.isEmpty
+                      ? const Center(child: CircularProgressIndicator())
+                      : list.isEmpty
+                          ? ListView(padding: const EdgeInsets.only(top: 30), children: const [
+                              EmptyState(
+                                icon: 'message',
+                                title: 'گفتگویی نیست',
+                                message: 'در این بخش گفتگویی وجود ندارد.',
+                              ),
+                            ])
+                          : ListView.separated(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              itemCount: list.length,
+                              separatorBuilder: (_, __) => const SizedBox(height: 10),
+                              itemBuilder: (context, i) => _row(context, list[i]),
                             ),
-                          ])
-                        : ListView.separated(
-                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-                            itemCount: list.length,
-                            separatorBuilder: (_, __) => const SizedBox(height: 10),
-                            itemBuilder: (context, i) => _row(context, list[i]),
-                          ),
+            ),
           ),
         ],
       ),
@@ -256,12 +347,31 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
   final List<Map<String, dynamic>> _msgs = <Map<String, dynamic>>[];
   String _status = 'open';
   String _name = '';
+  Map<String, dynamic> _meta = const <String, dynamic>{};
+  bool _blocked = false;
   bool _loading = StoreApi.hasStore;
   bool _sending = false;
   bool _internal = false;
+  bool _uploading = false;
   int _lastId = 0;
-  Timer? _poll;
+  Timer? _poll; // direct-WP fallback cadence (4s) — used until/unless the beacon takes over.
   VoidCallback? _restoreFab;
+
+  // ── ITEM13 near-real-time beacon (central /s/changes) ──────────────
+  // Same content-blind relay as the inbox: only subscribe-token + version cross
+  // central; message bodies are still fetched from the merchant WP via _load().
+  Timer? _beacon;
+  String _central = '';
+  String _subToken = '';
+  int _lastVersion = -1;
+  int _beaconFails = 0;
+
+  // Voice recording.
+  final AudioRecorder _recorder = AudioRecorder();
+  bool _recording = false;
+  int _recSecs = 0;
+  Timer? _recTimer;
+  String? _recPath;
 
   final TextEditingController _input = TextEditingController();
   final ScrollController _scroll = ScrollController();
@@ -271,8 +381,46 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
     super.initState();
     _name = widget.name;
     if (StoreApi.hasStore) {
+      // Immediate first WP fetch so the first paint is real.
       _load();
+      // Start on the direct-WP fallback cadence; the beacon disables it on success.
       _poll = Timer.periodic(const Duration(seconds: 4), (_) => _load(silent: true));
+      _initBeacon();
+    }
+  }
+
+  /// Fetch relay creds ONCE; if usable, start the central beacon (3s) and stop
+  /// the direct-WP timer. On any failure the direct-WP timer stays running.
+  Future<void> _initBeacon() async {
+    final StoreResult r = await StoreApi.chatRelayCredentials();
+    if (!mounted) return;
+    final String central = (r.map['central_base'] ?? '').toString().trim();
+    final String token = (r.map['subscribe_token'] ?? '').toString().trim();
+    if (!r.ok || central.isEmpty || token.isEmpty) return; // keep direct-WP timer.
+    _central = central;
+    _subToken = token;
+    _poll?.cancel();
+    _poll = null;
+    _beacon = Timer.periodic(const Duration(seconds: 3), (_) => _tickBeacon());
+  }
+
+  Future<void> _tickBeacon() async {
+    final ({bool ok, int version, bool changed}) c =
+        await StoreApi.chatChanges(_central, _subToken);
+    if (!mounted) return;
+    if (!c.ok) {
+      if (++_beaconFails >= 3) {
+        _beacon?.cancel();
+        _beacon = null;
+        _poll ??= Timer.periodic(
+            const Duration(seconds: 4), (_) => _load(silent: true));
+      }
+      return;
+    }
+    _beaconFails = 0;
+    if (_lastVersion < 0 || c.version > _lastVersion) {
+      _lastVersion = c.version;
+      _load(silent: true);
     }
   }
 
@@ -289,6 +437,9 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
   @override
   void dispose() {
     _poll?.cancel();
+    _beacon?.cancel();
+    _recTimer?.cancel();
+    _recorder.dispose();
     _restoreFab?.call();
     _input.dispose();
     _scroll.dispose();
@@ -302,11 +453,21 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
       setState(() => _loading = false);
       return;
     }
-    final List<Map<String, dynamic>> fresh = r.list;
+    final List<Map<String, dynamic>> fresh = (r.map['messages'] is List)
+        ? List<Map<String, dynamic>>.from((r.map['messages'] as List)
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e)))
+        : const <Map<String, dynamic>>[];
     setState(() {
       _status = (r.map['status'] ?? _status).toString();
       final String n = (r.map['customer_name'] ?? '').toString();
       if (n.isNotEmpty) _name = n;
+      if (r.map['meta'] is Map) {
+        _meta = Map<String, dynamic>.from(r.map['meta'] as Map);
+      }
+      if (r.map.containsKey('blocked')) {
+        _blocked = ((r.map['blocked'] ?? 0) as num).toInt() == 1;
+      }
       for (final m in fresh) {
         final int mid = ((m['id'] ?? 0) as num).toInt();
         if (mid > _lastId) _lastId = mid;
@@ -360,6 +521,229 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
     }
   }
 
+  /// Append the message a send/upload returned (dedup by id) + scroll.
+  void _appendReturned(StoreResult r) {
+    if (r.map['message'] is Map) {
+      final Map<String, dynamic> m = Map<String, dynamic>.from(r.map['message'] as Map);
+      final int mid = ((m['id'] ?? 0) as num).toInt();
+      if (mid > _lastId) {
+        _lastId = mid;
+        setState(() => _msgs.add(m));
+        _scrollToEnd();
+      }
+    }
+  }
+
+  Future<void> _pickAndSend() async {
+    if (_uploading || _sending || _recording || !StoreApi.hasStore) return;
+    final FilePickerResult? res = await FilePicker.platform
+        .pickFiles(allowMultiple: true, type: FileType.any, withData: false);
+    if (res == null || res.files.isEmpty || !mounted) return;
+    final List<String> paths =
+        res.files.map((f) => f.path).whereType<String>().toList();
+    if (paths.isEmpty) return;
+    final String caption = _input.text.trim();
+    setState(() => _uploading = true);
+    final StoreResult r = await StoreApi.chatUpload(widget.id,
+        filePaths: paths, internal: _internal, caption: caption);
+    if (!mounted) return;
+    setState(() => _uploading = false);
+    if (r.ok) {
+      _input.clear();
+      _appendReturned(r);
+    } else {
+      AppScope.of(context)
+          .showToast(r.error ?? 'بارگذاری ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
+
+  Future<void> _startRec() async {
+    if (_uploading || _sending || _recording || !StoreApi.hasStore) return;
+    final bool ok = await _recorder.hasPermission();
+    if (!ok) {
+      if (mounted) {
+        AppScope.of(context)
+            .showToast('دسترسی به میکروفون لازم است', kind: 'error', icon: 'alert');
+      }
+      return;
+    }
+    final Directory dir = await getTemporaryDirectory();
+    final String path =
+        '${dir.path}/wcp_voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+    await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
+    if (!mounted) return;
+    setState(() {
+      _recording = true;
+      _recSecs = 0;
+      _recPath = path;
+    });
+    _recTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() => _recSecs++);
+      if (_recSecs >= 600) _stopRec(true); // hard ceiling
+    });
+  }
+
+  Future<void> _stopRec(bool send) async {
+    _recTimer?.cancel();
+    final int secs = _recSecs;
+    String? path;
+    try {
+      path = await _recorder.stop();
+    } catch (_) {}
+    path ??= _recPath;
+    if (!mounted) return;
+    setState(() => _recording = false);
+    if (!send || path == null) {
+      if (path != null) {
+        try {
+          File(path).deleteSync();
+        } catch (_) {}
+      }
+      return;
+    }
+    setState(() => _uploading = true);
+    final StoreResult r = await StoreApi.chatUpload(widget.id,
+        voicePath: path, voiceSeconds: secs, internal: _internal);
+    if (!mounted) return;
+    setState(() => _uploading = false);
+    if (r.ok) {
+      _appendReturned(r);
+    } else {
+      AppScope.of(context)
+          .showToast(r.error ?? 'ارسال ویس ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
+
+  Future<void> _deleteConversation() async {
+    final AppScope nav = AppScope.of(context);
+    final bool? yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final c = ctx.c;
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            backgroundColor: c.bg1,
+            title: const Text('حذف گفتگو'),
+            content: const Text(
+                'این گفتگو و همه پیام‌ها و فایل‌هایش برای همیشه حذف می‌شوند. مطمئن هستید؟'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('انصراف')),
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: const Text('حذف', style: TextStyle(color: Color(0xFFEF4444)))),
+            ],
+          ),
+        );
+      },
+    );
+    if (yes != true) return;
+    final StoreResult r = await StoreApi.chatDeleteConversation(widget.id);
+    if (!mounted) return;
+    if (r.ok) {
+      nav.showToast('گفتگو حذف شد', kind: 'success', icon: 'check');
+      nav.pop();
+    } else {
+      nav.showToast(r.error ?? 'حذف ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
+
+  // ── Customer contact details from the conversation meta ──────────
+  String _metaStr(List<String> keys) {
+    for (final String k in keys) {
+      final dynamic v = _meta[k];
+      if (v != null && v.toString().trim().isNotEmpty) return v.toString().trim();
+    }
+    return '';
+  }
+
+  String get _custEmail => _metaStr(const ['email', 'customer_email']);
+  String get _custPhone => _metaStr(const ['phone', 'customer_phone', 'tel']);
+  String get _custDept => _metaStr(const ['department', 'department_name', 'dept']);
+
+  bool get _hasContact =>
+      _custEmail.isNotEmpty || _custPhone.isNotEmpty || _custDept.isNotEmpty;
+
+  /// One-line summary shown under the header (phone preferred, else email).
+  String get _contactHint {
+    if (_custPhone.isNotEmpty) return Fmt.fa(_custPhone);
+    if (_custEmail.isNotEmpty) return _custEmail;
+    if (_custDept.isNotEmpty) return _custDept;
+    return '';
+  }
+
+  Future<void> _openOverflow() async {
+    final String action = await showWcpSheet<String>(
+          context,
+          title: 'گزینه‌های گفتگو',
+          child: _OverflowSheet(blocked: _blocked),
+        ) ??
+        '';
+    if (!mounted) return;
+    if (action == 'block') {
+      _toggleBlock();
+    } else if (action == 'delete') {
+      _deleteConversation();
+    }
+  }
+
+  void _openContactSheet() {
+    showWcpSheet<void>(
+      context,
+      title: _name.isNotEmpty ? _name : 'مشتری',
+      child: _ContactSheet(
+        email: _custEmail,
+        phone: _custPhone,
+        department: _custDept,
+      ),
+    );
+  }
+
+  Future<void> _toggleBlock() async {
+    final AppScope nav = AppScope.of(context);
+    final bool willBlock = !_blocked;
+    final bool? yes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) {
+        final c = ctx.c;
+        return Directionality(
+          textDirection: TextDirection.rtl,
+          child: AlertDialog(
+            backgroundColor: c.bg1,
+            title: Text(willBlock ? 'مسدود کردن مشتری' : 'رفع مسدودی'),
+            content: Text(willBlock
+                ? 'با مسدود کردن، مشتری دیگر نمی‌تواند در این گفتگو پیام بفرستد. ادامه می‌دهید؟'
+                : 'مسدودی این گفتگو برداشته شود تا مشتری دوباره بتواند پیام بفرستد؟'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(false),
+                  child: const Text('انصراف')),
+              TextButton(
+                  onPressed: () => Navigator.of(ctx).pop(true),
+                  child: Text(willBlock ? 'مسدود کردن' : 'رفع مسدودی',
+                      style: TextStyle(
+                          color: willBlock ? const Color(0xFFEF4444) : c.accent))),
+            ],
+          ),
+        );
+      },
+    );
+    if (yes != true) return;
+    final StoreResult r = await StoreApi.chatBlockConversation(widget.id, willBlock);
+    if (!mounted) return;
+    if (r.ok) {
+      setState(() => _blocked =
+          r.map.containsKey('blocked') ? ((r.map['blocked'] ?? 0) as num).toInt() == 1 : willBlock);
+      nav.showToast(_blocked ? 'مشتری مسدود شد' : 'مسدودی برداشته شد',
+          kind: 'success', icon: 'check');
+    } else {
+      nav.showToast(r.error ?? 'تغییر وضعیت مسدودی ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
@@ -371,33 +755,74 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
         children: [
           WcpAppBar(
             title: _name.isNotEmpty ? _name : 'گفتگو',
-            sub: info.fa,
+            sub: _blocked ? 'مسدود · ${info.fa}' : info.fa,
             onBack: () => AppScope.of(context).pop(),
             actions: [
-              IconBtn(
-                name: _status == 'closed' ? 'refresh' : 'check',
-                onClick: () => _setStatus(_status == 'closed' ? 'open' : 'closed'),
+              if (_hasContact)
+                Semantics(
+                  label: 'اطلاعات تماس مشتری',
+                  button: true,
+                  child: IconBtn(name: 'info', onClick: _openContactSheet),
+                ),
+              Semantics(
+                label: _status == 'closed' ? 'بازگشایی گفتگو' : 'بستن گفتگو',
+                button: true,
+                child: IconBtn(
+                  name: _status == 'closed' ? 'refresh' : 'check',
+                  onClick: () => _setStatus(_status == 'closed' ? 'open' : 'closed'),
+                ),
+              ),
+              Semantics(
+                label: 'گزینه‌های بیشتر',
+                button: true,
+                child: IconBtn(name: 'dots', onClick: _openOverflow),
               ),
             ],
           ),
+          if (_hasContact && _contactHint.isNotEmpty)
+            GestureDetector(
+              onTap: _openContactSheet,
+              behavior: HitTestBehavior.opaque,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    WcpIcon(_custPhone.isNotEmpty ? 'phone' : 'message', size: 12, color: c.tx3),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(_contactHint,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 11.5, color: c.tx3)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           Expanded(
             child: _loading && _msgs.isEmpty
                 ? const Center(child: CircularProgressIndicator())
-                : ListView(
-                    controller: _scroll,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                    children: [
-                      if (_msgs.isEmpty)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 28),
-                          child: Text('هنوز پیامی در این گفتگو نیست.',
-                              textAlign: TextAlign.center, style: TextStyle(fontSize: 12.5, color: c.tx3)),
-                        ),
-                      for (var i = 0; i < _msgs.length; i++) ...[
-                        const SizedBox(height: 12),
-                        _bubble(context, _msgs[i]),
+                : RefreshIndicator(
+                    onRefresh: () => _load(),
+                    child: ListView(
+                      controller: _scroll,
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      children: [
+                        if (_msgs.isEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 28),
+                            child: Text('هنوز پیامی در این گفتگو نیست.',
+                                textAlign: TextAlign.center, style: TextStyle(fontSize: 12.5, color: c.tx3)),
+                          ),
+                        for (var i = 0; i < _msgs.length; i++) ...[
+                          const SizedBox(height: 12),
+                          _bubble(context, _msgs[i]),
+                        ],
                       ],
-                    ],
+                    ),
                   ),
           ),
           if (_status != 'closed') _inputBar(context) else _closedFooter(context),
@@ -415,6 +840,11 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
     final bool internal = ((m['is_internal'] ?? 0) as num).toInt() == 1;
     final String body = (m['body'] ?? '').toString();
     final String who = (m['sender_name'] ?? '').toString();
+    final List<Map<String, dynamic>> atts = (m['attachments'] is List)
+        ? List<Map<String, dynamic>>.from((m['attachments'] as List)
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e)))
+        : const <Map<String, dynamic>>[];
 
     if (isSystem) {
       return Center(
@@ -466,26 +896,37 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
                               style: TextStyle(
                                   fontSize: 10, fontWeight: FontWeight.w700, color: Color(0xFFF59E0B))),
                         ),
-                      Text(
-                        body,
-                        style: TextStyle(
-                          fontSize: 14,
-                          height: 1.7,
-                          color: internal ? const Color(0xFFB45309) : (isStaff ? c.txOnAccent : c.tx1),
+                      if (body.isNotEmpty)
+                        Text(
+                          body,
+                          style: TextStyle(
+                            fontSize: 14,
+                            height: 1.7,
+                            color: internal ? const Color(0xFFB45309) : (isStaff ? c.txOnAccent : c.tx1),
+                          ),
                         ),
-                      ),
+                      for (int k = 0; k < atts.length; k++)
+                        Padding(
+                          padding: EdgeInsets.only(top: (k == 0 && body.isEmpty) ? 0 : 6),
+                          child: _attachment(context, atts[k], isStaff),
+                        ),
                     ],
                   ),
                 ),
               ),
               Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  isStaff ? (who.isNotEmpty ? who : 'شما') : (_name.isNotEmpty ? _name : 'مشتری'),
-                  textAlign: isStaff ? TextAlign.left : TextAlign.right,
-                  textDirection: TextDirection.rtl,
-                  style: TextStyle(fontSize: 10, color: c.tx3),
-                ),
+                child: Builder(builder: (_) {
+                  final String label =
+                      isStaff ? (who.isNotEmpty ? who : 'شما') : (_name.isNotEmpty ? _name : 'مشتری');
+                  final String time = _msgTime(m['created_at']);
+                  return Text(
+                    time.isEmpty ? label : '$label · $time',
+                    textAlign: isStaff ? TextAlign.left : TextAlign.right,
+                    textDirection: TextDirection.rtl,
+                    style: TextStyle(fontSize: 10, color: c.tx3),
+                  );
+                }),
               ),
             ],
           ),
@@ -531,8 +972,14 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
               ),
             ),
           ),
-          Row(
+          if (_recording)
+            _recordingBar(context)
+          else
+            Row(
             children: [
+              _roundBtn(context, 'clip', (_uploading || _sending) ? null : _pickAndSend,
+                  label: 'پیوست فایل'),
+              const SizedBox(width: 6),
               Expanded(
                 child: Container(
                   constraints: const BoxConstraints(minHeight: 46),
@@ -565,29 +1012,169 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
                 ),
               ),
               const SizedBox(width: 9),
-              GestureDetector(
-                onTap: _send,
-                child: Container(
-                  width: 46,
-                  height: 46,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: (_input.text.trim().isNotEmpty && !_sending) ? c.accent : c.bg3,
-                    shape: BoxShape.circle,
-                  ),
-                  child: _sending
-                      ? const SizedBox(
-                          width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                      : WcpIcon('send',
-                          size: 20,
-                          color: (_input.text.trim().isNotEmpty) ? c.txOnAccent : c.tx3),
-                ),
-              ),
+              if (_input.text.trim().isNotEmpty)
+                _sendBtn(context)
+              else
+                _roundBtn(context, 'mic', (_uploading || _sending) ? null : _startRec,
+                    label: 'ضبط پیام صوتی'),
             ],
           ),
         ],
       ),
     );
+  }
+
+  /// A 46×46 neutral round icon button (attach / mic). [onTap] null = disabled.
+  /// [label] is the accessibility/tooltip text for the icon-only control.
+  Widget _roundBtn(BuildContext context, String icon, VoidCallback? onTap,
+      {required String label}) {
+    final c = context.c;
+    return Tooltip(
+      message: label,
+      child: Semantics(
+        label: label,
+        button: true,
+        enabled: onTap != null,
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            width: 46,
+            height: 46,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: c.bg1, shape: BoxShape.circle, border: Border.all(color: c.line, width: 1)),
+            child: WcpIcon(icon, size: 20, color: onTap == null ? c.tx3 : c.tx2),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The accent send button (spinner while sending/uploading).
+  Widget _sendBtn(BuildContext context) {
+    final c = context.c;
+    final bool busy = _sending || _uploading;
+    return Tooltip(
+      message: 'ارسال پیام',
+      child: Semantics(
+        label: 'ارسال پیام',
+        button: true,
+        enabled: !busy,
+        child: GestureDetector(
+          onTap: busy ? null : _send,
+          child: Container(
+            width: 46,
+            height: 46,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: busy ? c.bg3 : c.accent, shape: BoxShape.circle),
+            child: busy
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : WcpIcon('send', size: 20, color: c.txOnAccent),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The active voice-recording bar: cancel · blinking dot + timer · send.
+  Widget _recordingBar(BuildContext context) {
+    final c = context.c;
+    String dur(int s) {
+      final int m = s ~/ 60;
+      final int r = s % 60;
+      return Fmt.fa('$m:${r < 10 ? '0$r' : r}');
+    }
+
+    return Row(
+      children: [
+        Tooltip(
+          message: 'لغو ضبط',
+          child: Semantics(
+            label: 'لغو ضبط',
+            button: true,
+            child: GestureDetector(
+              onTap: () => _stopRec(false),
+              child: Container(
+                width: 46,
+                height: 46,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(color: c.bg1, shape: BoxShape.circle, border: Border.all(color: c.line, width: 1)),
+                child: const WcpIcon('trash', size: 20, color: Color(0xFFEF4444)),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Container(
+          width: 9,
+          height: 9,
+          decoration: const BoxDecoration(color: Color(0xFFEF4444), shape: BoxShape.circle),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text('در حال ضبط…  ${dur(_recSecs)}',
+              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: c.tx1)),
+        ),
+        Tooltip(
+          message: 'ارسال پیام صوتی',
+          child: Semantics(
+            label: 'ارسال پیام صوتی',
+            button: true,
+            enabled: !_uploading,
+            child: GestureDetector(
+              onTap: _uploading ? null : () => _stopRec(true),
+              child: Container(
+                width: 46,
+                height: 46,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(color: _uploading ? c.bg3 : c.accent, shape: BoxShape.circle),
+                child: _uploading
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : WcpIcon('send', size: 20, color: c.txOnAccent),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Render one attachment descriptor {kind,name,size,ext,dur,mid,i}.
+  Widget _attachment(BuildContext context, Map<String, dynamic> a, bool isStaff) {
+    final int mid = ((a['mid'] ?? 0) as num).toInt();
+    final int idx = ((a['i'] ?? 0) as num).toInt();
+    final String kind = (a['kind'] ?? 'file').toString();
+    final String name = (a['name'] ?? 'فایل').toString();
+    final int size = ((a['size'] ?? 0) as num).toInt();
+    final int durSec = ((a['dur'] ?? 0) as num).toInt();
+    final String ext = (a['ext'] ?? '').toString();
+    if (kind == 'image') {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 220, maxWidth: 240),
+          child: Image.network(
+            StoreApi.chatAttachmentUrl(mid, idx),
+            headers: StoreApi.mediaAuthHeaders,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => _FileChip(
+                messageId: mid, index: idx, name: name, size: size, ext: ext, onAccent: isStaff, icon: 'image'),
+            loadingBuilder: (ctx, child, p) => p == null
+                ? child
+                : Container(
+                    width: 160,
+                    height: 120,
+                    alignment: Alignment.center,
+                    child: const SizedBox(
+                        width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
+          ),
+        ),
+      );
+    }
+    if (kind == 'voice') {
+      return _VoiceBubble(messageId: mid, index: idx, seconds: durSec, onAccent: isStaff);
+    }
+    return _FileChip(
+        messageId: mid, index: idx, name: name, size: size, ext: ext, onAccent: isStaff, icon: 'file');
   }
 
   Widget _closedFooter(BuildContext context) {
@@ -920,6 +1507,408 @@ class _StaffEditSheetState extends State<_StaffEditSheet> {
           full: true,
           label: _saving ? 'در حال ذخیره…' : 'ذخیره',
           onClick: _save,
+        ),
+      ],
+    );
+  }
+}
+
+// ── Voice attachment player (fetches gated bytes with auth, plays via audioplayers) ──
+class _VoiceBubble extends StatefulWidget {
+  const _VoiceBubble({
+    required this.messageId,
+    required this.index,
+    required this.seconds,
+    required this.onAccent,
+  });
+  final int messageId;
+  final int index;
+  final int seconds;
+  final bool onAccent;
+  @override
+  State<_VoiceBubble> createState() => _VoiceBubbleState();
+}
+
+class _VoiceBubbleState extends State<_VoiceBubble> {
+  final AudioPlayer _player = AudioPlayer();
+  StreamSubscription<PlayerState>? _sub;
+  bool _loading = false;
+  bool _playing = false;
+  // BytesSource produced no sound on Android; instead the gated bytes are
+  // written to a temp file once and replayed from disk via DeviceFileSource.
+  String? _localPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _sub = _player.onPlayerStateChanged.listen((PlayerState s) {
+      if (!mounted) return;
+      setState(() => _playing = s == PlayerState.playing);
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    _player.dispose();
+    // Only remove the cached file on dispose (never mid-play).
+    final String? p = _localPath;
+    if (p != null) {
+      try {
+        File(p).deleteSync();
+      } catch (_) {}
+    }
+    super.dispose();
+  }
+
+  Future<void> _toggle() async {
+    if (_playing) {
+      await _player.pause();
+      return;
+    }
+    try {
+      if (_localPath == null) {
+        setState(() => _loading = true);
+        final Uint8List? b =
+            await StoreApi.chatAttachmentBytes(widget.messageId, widget.index);
+        if (!mounted) return;
+        if (b == null) {
+          setState(() => _loading = false);
+          AppScope.of(context)
+              .showToast('پخش ویس ناموفق بود', kind: 'error', icon: 'alert');
+          return;
+        }
+        final Directory dir = await getTemporaryDirectory();
+        final String path =
+            '${dir.path}/wcp_play_${widget.messageId}_${widget.index}.m4a';
+        await File(path).writeAsBytes(b, flush: true);
+        if (!mounted) return;
+        setState(() => _loading = false);
+        _localPath = path;
+      }
+      await _player.play(DeviceFileSource(_localPath!));
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      AppScope.of(context)
+          .showToast('پخش ویس ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
+
+  String _fmtDur(int s) {
+    final int m = s ~/ 60;
+    final int r = s % 60;
+    return Fmt.fa('$m:${r < 10 ? '0$r' : r}');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final Color fg = widget.onAccent ? c.txOnAccent : c.tx1;
+    return GestureDetector(
+      onTap: _loading ? null : _toggle,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: widget.onAccent ? Colors.white.withAlpha(0x24) : c.bg3,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _loading
+                ? SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: fg))
+                : WcpIcon(_playing ? 'pause' : 'play', size: 18, color: fg),
+            const SizedBox(width: 8),
+            WcpIcon('mic', size: 13, color: fg.withAlpha(0xAA)),
+            const SizedBox(width: 4),
+            Text(_fmtDur(widget.seconds), style: TextStyle(fontSize: 12, color: fg)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── File attachment chip — tap to download (gated bytes) + open natively ──
+class _FileChip extends StatefulWidget {
+  const _FileChip({
+    required this.messageId,
+    required this.index,
+    required this.name,
+    required this.size,
+    required this.ext,
+    required this.onAccent,
+    required this.icon,
+  });
+  final int messageId;
+  final int index;
+  final String name;
+  final int size;
+  final String ext;
+  final bool onAccent;
+  final String icon;
+  @override
+  State<_FileChip> createState() => _FileChipState();
+}
+
+class _FileChipState extends State<_FileChip> {
+  bool _busy = false;
+
+  String _humanSize(int b) {
+    if (b >= 1048576) return '${Fmt.fa((b / 1048576).toStringAsFixed(1))} مگابایت';
+    if (b >= 1024) return '${Fmt.fa((b / 1024).round())} کیلوبایت';
+    return '${Fmt.fa(b)} بایت';
+  }
+
+  /// Build a safe local filename: strip path separators, keep the extension
+  /// (from the name, else fall back to the descriptor's `ext`).
+  String _safeName() {
+    String n = widget.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+    if (n.isEmpty) n = 'file';
+    if (!n.contains('.') && widget.ext.isNotEmpty) {
+      n = '$n.${widget.ext.replaceAll('.', '')}';
+    }
+    return n;
+  }
+
+  /// Best-effort MIME from the file extension (the system viewer is forgiving).
+  String _mimeFor(String ext) {
+    switch (ext.toLowerCase().replaceAll('.', '')) {
+      case 'pdf':
+        return 'application/pdf';
+      case 'doc':
+        return 'application/msword';
+      case 'docx':
+        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      case 'xls':
+        return 'application/vnd.ms-excel';
+      case 'xlsx':
+        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      case 'ppt':
+        return 'application/vnd.ms-powerpoint';
+      case 'pptx':
+        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      case 'zip':
+        return 'application/zip';
+      case 'rar':
+        return 'application/vnd.rar';
+      case 'txt':
+        return 'text/plain';
+      case 'csv':
+        return 'text/csv';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'webp':
+        return 'image/webp';
+      case 'mp3':
+        return 'audio/mpeg';
+      case 'm4a':
+        return 'audio/mp4';
+      case 'mp4':
+        return 'video/mp4';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
+  Future<void> _open() async {
+    if (_busy) return;
+    final AppScope nav = AppScope.of(context);
+    setState(() => _busy = true);
+    try {
+      final Uint8List? b =
+          await StoreApi.chatAttachmentBytes(widget.messageId, widget.index);
+      if (!mounted) return;
+      if (b == null) {
+        setState(() => _busy = false);
+        nav.showToast('دریافت فایل ناموفق بود', kind: 'error', icon: 'alert');
+        return;
+      }
+      final String fname = _safeName();
+      final Directory dir = await getTemporaryDirectory();
+      final String path = '${dir.path}/$fname';
+      await File(path).writeAsBytes(b, flush: true);
+      if (!mounted) return;
+      setState(() => _busy = false);
+      final String ext =
+          fname.contains('.') ? fname.split('.').last : widget.ext;
+      final bool opened = await Native.openFile(path, mime: _mimeFor(ext));
+      if (!mounted) return;
+      if (!opened) {
+        nav.showToast('فایل ذخیره شد: $path', kind: 'info', icon: 'check');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      nav.showToast('باز کردن فایل ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final Color fg = widget.onAccent ? c.txOnAccent : c.tx1;
+    return GestureDetector(
+      onTap: _busy ? null : _open,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: widget.onAccent ? Colors.white.withAlpha(0x24) : c.bg3,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _busy
+                ? SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: fg))
+                : WcpIcon(widget.icon, size: 18, color: fg),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(widget.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: fg)),
+                  if (widget.size > 0)
+                    Text(_humanSize(widget.size),
+                        style: TextStyle(fontSize: 10.5, color: fg.withAlpha(0xAA))),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Customer contact sheet — email/phone/department, tap-to-call + copy ──
+class _ContactSheet extends StatelessWidget {
+  const _ContactSheet({required this.email, required this.phone, required this.department});
+  final String email;
+  final String phone;
+  final String department;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (phone.isNotEmpty)
+          _row(context, icon: 'phone', label: 'تلفن', value: phone, dial: 'tel:$phone'),
+        if (email.isNotEmpty)
+          _row(context, icon: 'message', label: 'ایمیل', value: email, dial: 'mailto:$email'),
+        if (department.isNotEmpty)
+          _row(context, icon: 'layers', label: 'دپارتمان', value: department),
+        const SizedBox(height: 6),
+        Text('برای تماس روی شماره، و برای کپی روی نماد کنار هر مورد بزنید.',
+            style: TextStyle(fontSize: 11, color: c.tx3)),
+      ],
+    );
+  }
+
+  Widget _row(BuildContext context,
+      {required String icon, required String label, required String value, String? dial}) {
+    final c = context.c;
+    final AppScope nav = AppScope.of(context);
+    Future<void> doDial() async {
+      if (dial == null) return;
+      try {
+        await launchUrl(Uri.parse(dial), mode: LaunchMode.externalApplication);
+      } catch (_) {
+        nav.showToast('امکان برقراری تماس نبود', kind: 'error', icon: 'alert');
+      }
+    }
+
+    Future<void> doCopy() async {
+      await Clipboard.setData(ClipboardData(text: value));
+      nav.showToast('کپی شد', kind: 'success', icon: 'check');
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: c.bg2, borderRadius: BorderRadius.circular(10)),
+            child: WcpIcon(icon, size: 18, color: c.tx2),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: dial != null ? doDial : doCopy,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label, style: TextStyle(fontSize: 11, color: c.tx3)),
+                  const SizedBox(height: 2),
+                  Text(label == 'تلفن' ? Fmt.fa(value) : value,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: c.tx1)),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Semantics(
+            label: 'کپی $label',
+            button: true,
+            child: IconBtn(name: 'clip', onClick: doCopy),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Conversation overflow actions — block/unblock + delete ──────────
+class _OverflowSheet extends StatelessWidget {
+  const _OverflowSheet({required this.blocked});
+  final bool blocked;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        WcpButton(
+          variant: 'soft',
+          full: true,
+          icon: 'shield',
+          label: blocked ? 'رفع مسدودی' : 'مسدود کردن مشتری',
+          onClick: () => Navigator.of(context).pop('block'),
+        ),
+        const SizedBox(height: 10),
+        WcpButton(
+          variant: 'ghost',
+          full: true,
+          icon: 'trash',
+          label: 'حذف گفتگو',
+          onClick: () => Navigator.of(context).pop('delete'),
         ),
       ],
     );

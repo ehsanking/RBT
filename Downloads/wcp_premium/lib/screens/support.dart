@@ -45,8 +45,32 @@ Color _kindColor(BuildContext context, String kind) {
 // ════════════════════════════════════════════════════════════════
 // Support & Engagement hub
 // ════════════════════════════════════════════════════════════════
-class SupportHubScreen extends StatelessWidget {
+class SupportHubScreen extends StatefulWidget {
   const SupportHubScreen({super.key});
+
+  @override
+  State<SupportHubScreen> createState() => _SupportHubScreenState();
+}
+
+class _SupportHubScreenState extends State<SupportHubScreen> {
+  // Live-chat unread count (Σ staff_unread) for the «گفتگوی زنده» tile.
+  // Fetched once on open (cheap) while a store is connected.
+  int _chatUnread = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    if (StoreApi.hasStore) _loadChatUnread();
+  }
+
+  Future<void> _loadChatUnread() async {
+    final StoreResult r = await StoreApi.chatConversations(status: 'all');
+    if (!mounted) return;
+    if (!r.ok || r.map['available'] == false) return;
+    final int unread =
+        r.list.fold(0, (a, e) => a + ((e['staff_unread'] ?? 0) as num).toInt());
+    if (unread != _chatUnread) setState(() => _chatUnread = unread);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -68,7 +92,7 @@ class SupportHubScreen extends StatelessWidget {
         label: 'گفتگوی زنده',
         sub: 'چت مستقیم با مشتریان',
         color: c.success,
-        badge: 0,
+        badge: _chatUnread,
         go: 'chatInbox',
       ),
       _HubCard(
