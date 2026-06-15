@@ -460,10 +460,10 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       if (internal)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 4),
+                        const Padding(
+                          padding: EdgeInsets.only(bottom: 4),
                           child: Text('یادداشت داخلی',
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 10, fontWeight: FontWeight.w700, color: Color(0xFFF59E0B))),
                         ),
                       Text(
@@ -834,7 +834,7 @@ class _StaffEditSheet extends StatefulWidget {
 
 class _StaffEditSheetState extends State<_StaffEditSheet> {
   late String _role = (widget.staff['role'] ?? 'agent').toString() == 'manager' ? 'manager' : 'agent';
-  late Set<int> _picked = (widget.staff['departments'] is List)
+  late final Set<int> _picked = (widget.staff['departments'] is List)
       ? {...(widget.staff['departments'] as List).map((e) => (e as num).toInt())}
       : <int>{};
   bool _saving = false;
