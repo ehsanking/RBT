@@ -1282,13 +1282,18 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
       // Smaller thumbnail (#3): max ~190×200, cover-cropped, rounded; tapping it
       // opens the image full-size in a dialog. The save control lives OUTSIDE the
       // bubble (#1) so there is no in-bubble download button here.
-      return GestureDetector(
-        onTap: () => _openImageViewer(context, mid, idx),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 200, maxWidth: 190),
-            child: Image.network(
+      // Align gives the child LOOSE constraints so the 190-wide cap actually
+      // applies — the bubble Column is crossAxisAlignment.stretch (tight width),
+      // which would otherwise override the ConstrainedBox and stretch the image.
+      return Align(
+        alignment: AlignmentDirectional.centerStart,
+        child: GestureDetector(
+          onTap: () => _openImageViewer(context, mid, idx),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 200, maxWidth: 190),
+              child: Image.network(
               StoreApi.chatAttachmentUrl(mid, idx),
               headers: StoreApi.mediaAuthHeaders,
               fit: BoxFit.cover,
@@ -1302,6 +1307,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
                       alignment: Alignment.center,
                       child: const SizedBox(
                           width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))),
+              ),
             ),
           ),
         ),
