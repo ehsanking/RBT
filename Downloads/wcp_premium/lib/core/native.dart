@@ -123,4 +123,27 @@ class Native {
       return false;
     }
   }
+
+  /// Copy a local file (already written to app-private storage, e.g. a temp
+  /// dir) into the device's PUBLIC Downloads so the user can see it in their
+  /// Files / Downloads app. On Android Q+ this uses MediaStore.Downloads (no
+  /// storage permission); on older API it falls back to the app's external
+  /// files Download dir. No pub.dev dependency. Returns the saved path/URI on
+  /// success, or null when it couldn't be saved.
+  static Future<String?> saveToDownloads(
+    String sourcePath,
+    String name, {
+    String mime = 'application/octet-stream',
+  }) async {
+    try {
+      final String? saved = await _ch.invokeMethod<String>('saveToDownloads', {
+        'path': sourcePath,
+        'name': name,
+        'mime': mime,
+      });
+      return (saved == null || saved.isEmpty) ? null : saved;
+    } catch (_) {
+      return null;
+    }
+  }
 }

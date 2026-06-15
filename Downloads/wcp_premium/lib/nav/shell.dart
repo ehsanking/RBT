@@ -622,7 +622,7 @@ class _ChatPill extends StatelessWidget {
           ],
         ),
         child: Center(
-          child: WcpIcon('message', size: 24, sw: 2.2, color: c.accentText),
+          child: WcpIcon('chatDots', size: 24, sw: 2.2, color: c.accentText),
         ),
       ),
     );

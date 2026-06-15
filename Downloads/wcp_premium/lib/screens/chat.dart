@@ -687,6 +687,49 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
       _toggleBlock();
     } else if (action == 'delete') {
       _deleteConversation();
+    } else if (action == 'dept') {
+      _changeDepartment();
+    }
+  }
+
+  /// Fetch departments, let the manager pick one, then assign the conversation
+  /// to it via the API. The server injects a please-wait system message to the
+  /// customer (#3c) — here we just reflect the new department locally.
+  Future<void> _changeDepartment() async {
+    final AppScope nav = AppScope.of(context);
+    final StoreResult r = await StoreApi.chatDepartments();
+    if (!mounted) return;
+    final List<Map<String, dynamic>> depts = (r.map['departments'] is List)
+        ? List<Map<String, dynamic>>.from((r.map['departments'] as List)
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e)))
+        : const <Map<String, dynamic>>[];
+    if (depts.isEmpty) {
+      nav.showToast('دپارتمانی برای انتقال وجود ندارد', kind: 'info', icon: 'info');
+      return;
+    }
+    final Map<String, dynamic>? picked = await showWcpSheet<Map<String, dynamic>>(
+      context,
+      title: 'تغییر دپارتمان',
+      child: _DeptPickerSheet(departments: depts, currentName: _custDept),
+    );
+    if (picked == null || !mounted) return;
+    final int id = ((picked['id'] ?? 0) as num).toInt();
+    final String name = (picked['name'] ?? '').toString();
+    if (id <= 0) return;
+    final StoreResult a = await StoreApi.chatAssign(widget.id, departmentId: id);
+    if (!mounted) return;
+    if (a.ok) {
+      // Reflect the new department locally so the header hint + contact sheet update.
+      setState(() {
+        final Map<String, dynamic> meta = Map<String, dynamic>.from(_meta);
+        meta['department'] = name;
+        meta['department_name'] = name;
+        _meta = meta;
+      });
+      nav.showToast('گفتگو به «$name» منتقل شد', kind: 'success', icon: 'check');
+    } else {
+      nav.showToast(a.error ?? 'انتقال دپارتمان ناموفق بود', kind: 'error', icon: 'alert');
     }
   }
 
@@ -789,7 +832,12 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    WcpIcon(_custPhone.isNotEmpty ? 'phone' : 'message', size: 12, color: c.tx3),
+                    WcpIcon(
+                        _custPhone.isNotEmpty
+                            ? 'phone'
+                            : (_custEmail.isNotEmpty ? 'email' : 'layers'),
+                        size: 12,
+                        color: c.tx3),
                     const SizedBox(width: 6),
                     Flexible(
                       child: Text(_contactHint,
@@ -1534,6 +1582,7 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
   StreamSubscription<PlayerState>? _sub;
   bool _loading = false;
   bool _playing = false;
+  bool _saving = false; // download-to-Downloads in flight.
   // BytesSource produced no sound on Android; instead the gated bytes are
   // written to a temp file once and replayed from disk via DeviceFileSource.
   String? _localPath;
@@ -1601,6 +1650,49 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
     return Fmt.fa('$m:${r < 10 ? '0$r' : r}');
   }
 
+  /// Save the voice note to the device's public Downloads via the native
+  /// bridge (no pub.dev dep). Reuses the already-cached temp file when present.
+  Future<void> _download() async {
+    if (_loading || _saving) return;
+    final AppScope nav = AppScope.of(context);
+    setState(() => _saving = true);
+    try {
+      String? src = _localPath;
+      if (src == null) {
+        final Uint8List? b =
+            await StoreApi.chatAttachmentBytes(widget.messageId, widget.index);
+        if (!mounted) return;
+        if (b == null) {
+          setState(() => _saving = false);
+          nav.showToast('دریافت ویس ناموفق بود', kind: 'error', icon: 'alert');
+          return;
+        }
+        final Directory dir = await getTemporaryDirectory();
+        final String path =
+            '${dir.path}/wcp_play_${widget.messageId}_${widget.index}.m4a';
+        await File(path).writeAsBytes(b, flush: true);
+        if (!mounted) return;
+        _localPath = path;
+        src = path;
+      }
+      final String fname =
+          'voice_${widget.messageId}_${widget.index}.m4a';
+      final String? saved =
+          await Native.saveToDownloads(src, fname, mime: 'audio/mp4');
+      if (!mounted) return;
+      setState(() => _saving = false);
+      if (saved != null) {
+        nav.showToast('در پوشه دانلود ذخیره شد', kind: 'success', icon: 'check');
+      } else {
+        nav.showToast('ذخیره ویس ناموفق بود', kind: 'error', icon: 'alert');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      nav.showToast('ذخیره ویس ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
@@ -1626,6 +1718,8 @@ class _VoiceBubbleState extends State<_VoiceBubble> {
             WcpIcon('mic', size: 13, color: fg.withAlpha(0xAA)),
             const SizedBox(width: 4),
             Text(_fmtDur(widget.seconds), style: TextStyle(fontSize: 12, color: fg)),
+            const SizedBox(width: 6),
+            _DownloadBtn(fg: fg, busy: _saving, onTap: _download),
           ],
         ),
       ),
@@ -1753,6 +1847,43 @@ class _FileChipState extends State<_FileChip> {
     }
   }
 
+  /// Fetch the gated bytes and SAVE them to the device's public Downloads via
+  /// the native bridge (no pub.dev dep). Toasts the outcome.
+  Future<void> _download() async {
+    if (_busy) return;
+    final AppScope nav = AppScope.of(context);
+    setState(() => _busy = true);
+    try {
+      final Uint8List? b =
+          await StoreApi.chatAttachmentBytes(widget.messageId, widget.index);
+      if (!mounted) return;
+      if (b == null) {
+        setState(() => _busy = false);
+        nav.showToast('دریافت فایل ناموفق بود', kind: 'error', icon: 'alert');
+        return;
+      }
+      final String fname = _safeName();
+      final Directory dir = await getTemporaryDirectory();
+      final String path = '${dir.path}/$fname';
+      await File(path).writeAsBytes(b, flush: true);
+      final String ext =
+          fname.contains('.') ? fname.split('.').last : widget.ext;
+      final String? saved =
+          await Native.saveToDownloads(path, fname, mime: _mimeFor(ext));
+      if (!mounted) return;
+      setState(() => _busy = false);
+      if (saved != null) {
+        nav.showToast('در پوشه دانلود ذخیره شد', kind: 'success', icon: 'check');
+      } else {
+        nav.showToast('ذخیره فایل ناموفق بود', kind: 'error', icon: 'alert');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      nav.showToast('ذخیره فایل ناموفق بود', kind: 'error', icon: 'alert');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
@@ -1790,7 +1921,43 @@ class _FileChipState extends State<_FileChip> {
                 ],
               ),
             ),
+            const SizedBox(width: 6),
+            _DownloadBtn(fg: fg, busy: _busy, onTap: _download),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Small download icon button shared by file chips + voice bubbles ──
+class _DownloadBtn extends StatelessWidget {
+  const _DownloadBtn({required this.fg, required this.busy, required this.onTap});
+  final Color fg;
+  final bool busy;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'ذخیره در دانلود',
+      child: Semantics(
+        label: 'ذخیره در دانلود',
+        button: true,
+        enabled: !busy,
+        child: GestureDetector(
+          onTap: busy ? null : onTap,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            width: 30,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: fg.withAlpha(0x1A),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: WcpIcon('download', size: 16, color: fg.withAlpha(0xCC)),
+          ),
         ),
       ),
     );
@@ -1814,7 +1981,7 @@ class _ContactSheet extends StatelessWidget {
         if (phone.isNotEmpty)
           _row(context, icon: 'phone', label: 'تلفن', value: phone, dial: 'tel:$phone'),
         if (email.isNotEmpty)
-          _row(context, icon: 'message', label: 'ایمیل', value: email, dial: 'mailto:$email'),
+          _row(context, icon: 'email', label: 'ایمیل', value: email, dial: 'mailto:$email'),
         if (department.isNotEmpty)
           _row(context, icon: 'layers', label: 'دپارتمان', value: department),
         const SizedBox(height: 6),
@@ -1898,6 +2065,14 @@ class _OverflowSheet extends StatelessWidget {
         WcpButton(
           variant: 'soft',
           full: true,
+          icon: 'layers',
+          label: 'تغییر دپارتمان',
+          onClick: () => Navigator.of(context).pop('dept'),
+        ),
+        const SizedBox(height: 10),
+        WcpButton(
+          variant: 'soft',
+          full: true,
           icon: 'shield',
           label: blocked ? 'رفع مسدودی' : 'مسدود کردن مشتری',
           onClick: () => Navigator.of(context).pop('block'),
@@ -1910,6 +2085,68 @@ class _OverflowSheet extends StatelessWidget {
           label: 'حذف گفتگو',
           onClick: () => Navigator.of(context).pop('delete'),
         ),
+      ],
+    );
+  }
+}
+
+// ── Department picker sheet — lists departments, returns the chosen id ──
+class _DeptPickerSheet extends StatelessWidget {
+  const _DeptPickerSheet({required this.departments, required this.currentName});
+  final List<Map<String, dynamic>> departments;
+  final String currentName;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    if (departments.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Text('هنوز دپارتمانی ساخته نشده است.',
+            style: TextStyle(fontSize: 13, color: c.tx3)),
+      );
+    }
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        for (final d in departments)
+          Builder(builder: (_) {
+            final int id = ((d['id'] ?? 0) as num).toInt();
+            final String name = (d['name'] ?? '').toString();
+            final bool active =
+                currentName.isNotEmpty && name == currentName;
+            return GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => Navigator.of(context).pop(<String, dynamic>{'id': id, 'name': name}),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                          color: c.bg2, borderRadius: BorderRadius.circular(10)),
+                      child: WcpIcon('layers', size: 17, color: c.tx2),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: c.tx1)),
+                    ),
+                    if (active) WcpIcon('check', size: 18, color: c.accent),
+                  ],
+                ),
+              ),
+            );
+          }),
       ],
     );
   }

@@ -2,6 +2,7 @@ package com.woocommercemanager.wcp_premium
 
 import android.Manifest
 import android.app.KeyguardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -9,7 +10,9 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.ContactsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.core.content.FileProvider
@@ -65,6 +68,12 @@ class MainActivity : FlutterActivity() {
                     "openFile" -> openFile(
                         call.argument<String>("path") ?: "",
                         call.argument<String>("mime"),
+                        result
+                    )
+                    "saveToDownloads" -> saveToDownloads(
+                        call.argument<String>("path") ?: "",
+                        call.argument<String>("name") ?: "file",
+                        call.argument<String>("mime") ?: "application/octet-stream",
                         result
                     )
                     "biometricAvailable" -> result.success(deviceSecure())
@@ -243,6 +252,76 @@ class MainActivity : FlutterActivity() {
             result.success(false)
         } catch (e: Exception) {
             result.success(false)
+        }
+    }
+
+    /**
+     * Copy a local file (already in app-private storage, e.g. our cache/temp
+     * dir) into the device's PUBLIC Downloads collection so the user can find
+     * it in their Files / Downloads app. On Android Q+ (API 29) this uses
+     * MediaStore.Downloads — no storage permission and no pub plugin needed.
+     * On older API it falls back to the app's external-files Download dir
+     * (Context.getExternalFilesDir), which is also permission-free. Returns the
+     * saved content URI / file path string on success, or null on failure.
+     */
+    private fun saveToDownloads(
+        path: String,
+        name: String,
+        mime: String,
+        result: MethodChannel.Result
+    ) {
+        try {
+            if (path.isEmpty()) {
+                result.success(null)
+                return
+            }
+            val src = File(path)
+            if (!src.exists()) {
+                result.success(null)
+                return
+            }
+            val safeName = if (name.isBlank()) "file" else name
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, safeName)
+                    if (mime.isNotEmpty()) put(MediaStore.Downloads.MIME_TYPE, mime)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val resolver = contentResolver
+                val uri = resolver.insert(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                )
+                if (uri == null) {
+                    result.success(null)
+                    return
+                }
+                resolver.openOutputStream(uri)?.use { out ->
+                    src.inputStream().use { input -> input.copyTo(out) }
+                } ?: run {
+                    resolver.delete(uri, null, null)
+                    result.success(null)
+                    return
+                }
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                result.success(uri.toString())
+            } else {
+                // Pre-Q: app external-files Download dir (no permission).
+                val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                    ?: run {
+                        result.success(null)
+                        return
+                    }
+                if (!dir.exists()) dir.mkdirs()
+                val dest = File(dir, safeName)
+                src.inputStream().use { input ->
+                    dest.outputStream().use { out -> input.copyTo(out) }
+                }
+                result.success(dest.absolutePath)
+            }
+        } catch (e: Exception) {
+            result.error("save_failed", e.message, null)
         }
     }
 
