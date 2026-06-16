@@ -83,6 +83,15 @@ const Map<String, String> kGridCuratedModules = <String, String>{
   'time_machine': 'time-machine',
   'audience': 'audience',
   'mini_app': 'mini-app',
+  // app-config wave 4 (infra/AI modules with real merchant settings).
+  'cache': 'cache',
+  'pwa': 'pwa',
+  'emergency': 'emergency',
+  'footer_credit': 'footer-credit',
+  'mobile_template': 'mobile-template',
+  'ai_commerce': 'ai-commerce',
+  'ai_field_genie': 'ai-field-genie',
+  'ai_prompts': 'ai-prompts',
 };
 
 void registerModuleConfigScreen() {
