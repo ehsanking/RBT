@@ -81,6 +81,10 @@ const Map<String, String> kIconPaths = {
   'percent': 'M19 5 5 19M7.5 9a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM16.5 18a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z',
   'layers': 'M12 2 2 7l10 5 10-5zM2 12l10 5 10-5M2 17l10 5 10-5',
   'globe': 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20Z',
+  // Instagram glyph (rounded square + camera circle + top-right dot), stroke-based.
+  'instagram': 'M7 4h10a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z'
+      'M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0z'
+      'M17.5 6.6h0.01',
   'send': 'M22 2 11 13M22 2l-7 20-4-9-9-4z',
   'clip': 'M21 11.5 12 20.5a5 5 0 0 1-7-7l8.5-8.5a3 3 0 0 1 4.5 4.5L9.5 18a1.5 1.5 0 0 1-2-2l7.5-7.5',
   'mic': 'M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3ZM5 11a7 7 0 0 0 14 0M12 18v3',

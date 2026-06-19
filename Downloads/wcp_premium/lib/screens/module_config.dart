@@ -42,6 +42,16 @@ const List<String> kCuratedModuleIds = <String>[
   'seo',
   // leftover store-feature module (no master toggle) — app-config wave 1.
   'notice-bar',
+  // free-shipping progress bar (hub umbrella feature; own `enabled` switch).
+  'free-shipping-bar',
+  // order archive + draft-order cleanup (hub feature; own toggles).
+  'order-archive',
+  // sales-invoice PDF customisation (hub feature; own `enabled` switch) —
+  // company identity, logo, footer, amount-in-words, QR, email attach.
+  'invoice',
+  // in-person pickup notifications + delivery-code (branches stay on web; the
+  // order-detail mark-ready/collected actions live in orders.dart).
+  'pickup',
 ];
 
 /// Master-gate GRID modules that now open the curated editor instead of
@@ -52,7 +62,8 @@ const Map<String, String> kGridCuratedModules = <String, String>{
   'subscription_profile': 'subscription-profile',
   'stop_sale': 'stop-sale',
   'social_tools': 'social-tools',
-  'auth': 'auth',
+  // auth now opens its DATA stats screen (registerWave2StatsScreens) with a
+  // settings gear → mod_auth_settings; not a settings-only grid card.
   'b2b': 'b2b',
   // Grid ids come from the server module toggle keys minus the `module_`
   // prefix, so the installment card's id is `installment_gateway`
@@ -68,7 +79,7 @@ const Map<String, String> kGridCuratedModules = <String, String>{
   'chat': 'chat',
   'club': 'club',
   'coupon_builder': 'coupon-builder',
-  'popup_builder': 'popup-builder',
+  // popup_builder now opens its DATA stats screen with a settings gear.
   'forms': 'forms',
   // app-config wave 2.
   'landing_builder': 'landing-builder',
@@ -81,8 +92,8 @@ const Map<String, String> kGridCuratedModules = <String, String>{
   // dashboards/CRUD like product-changes, business-intelligence and
   // product-analytics were intentionally NOT given an empty config screen).
   'time_machine': 'time-machine',
-  'audience': 'audience',
-  'mini_app': 'mini-app',
+  // audience + mini_app now open their DATA dashboards (registerAudienceScreen
+  // / registerWave2cStatsScreens) with a settings gear; not settings-only cards.
   // app-config wave 4 (infra/AI modules with real merchant settings).
   'cache': 'cache',
   'pwa': 'pwa',
@@ -92,6 +103,8 @@ const Map<String, String> kGridCuratedModules = <String, String>{
   'ai_commerce': 'ai-commerce',
   'ai_field_genie': 'ai-field-genie',
   'ai_prompts': 'ai-prompts',
+  // app-config wave 1 (foundational): free-apis settings.
+  'free_apis': 'free-apis',
 };
 
 void registerModuleConfigScreen() {
@@ -137,7 +150,7 @@ class _ModuleConfigScreenState extends State<ModuleConfigScreen> {
       _load();
     } else {
       _loading = false;
-      _error = 'برای پیکربندیِ این ماژول، فروشگاه را متصل کنید.';
+      _error = 'برای پیکربندی این ماژول، فروشگاه را متصل کنید.';
     }
   }
 
@@ -152,7 +165,7 @@ class _ModuleConfigScreenState extends State<ModuleConfigScreen> {
             ? (r.map['message']?.toString() ?? 'این ماژول روی فروشگاه فعال نیست.')
             : (r.map['message']?.toString() ??
                 r.error ??
-                'دریافتِ تنظیمات ناموفق بود.');
+                'دریافت تنظیمات ناموفق بود.');
       });
       return;
     }
@@ -173,7 +186,7 @@ class _ModuleConfigScreenState extends State<ModuleConfigScreen> {
     _groups = groups;
     _actions = actions;
     _title = (m['title'] ?? widget.fallbackTitle ?? 'تنظیمات').toString();
-    _subtitle = (m['subtitle'] ?? 'پیکربندیِ کامل از اپ').toString();
+    _subtitle = (m['subtitle'] ?? 'پیکربندی کامل از اپ').toString();
   }
 
   Future<void> _save() async {
@@ -187,7 +200,7 @@ class _ModuleConfigScreenState extends State<ModuleConfigScreen> {
       setState(() => _ingest(r.map));
       nav.showToast('تنظیمات ذخیره شد', kind: 'success', icon: 'check');
     } else {
-      nav.showToast(r.error ?? r.map['message']?.toString() ?? 'ذخیرهٔ تنظیمات ناموفق بود',
+      nav.showToast(r.error ?? r.map['message']?.toString() ?? 'ذخیره تنظیمات ناموفق بود',
           kind: 'error', icon: 'alert');
     }
   }
@@ -199,7 +212,10 @@ class _ModuleConfigScreenState extends State<ModuleConfigScreen> {
       _actionBusy.add(id);
       _actionResult.remove(id);
     });
-    final StoreResult r = await StoreApi.moduleAction(widget.id, id);
+    // Send the CURRENT (unsaved) form values so an action like «تست اتصال»
+    // tests the provider/key the user just picked, not only the saved one.
+    final StoreResult r =
+        await StoreApi.moduleAction(widget.id, id, values: _ctrl.payload());
     if (!mounted) return;
     final bool ok = r.ok && r.map['ok'] == true;
     final String msg = (r.map['message'] ?? r.map['reply'] ?? r.error ?? '').toString();
@@ -207,7 +223,7 @@ class _ModuleConfigScreenState extends State<ModuleConfigScreen> {
       _actionBusy.remove(id);
       _actionOk[id] = ok;
       _actionResult[id] =
-          msg.isNotEmpty ? msg : (ok ? 'انجام شد ✓' : 'عملیات ناموفق بود.');
+          msg.isNotEmpty ? msg : (ok ? 'انجام شد.' : 'عملیات ناموفق بود.');
     });
     // Some actions hand back a URL (the regenerated Torob feed, an OAuth
     // authorize page, ...) — open it in the external browser.
@@ -232,7 +248,7 @@ class _ModuleConfigScreenState extends State<ModuleConfigScreen> {
             title: _title.isNotEmpty
                 ? _title
                 : (widget.fallbackTitle ?? 'تنظیمات'),
-            sub: _subtitle.isNotEmpty ? _subtitle : 'پیکربندیِ کامل از اپ',
+            sub: _subtitle.isNotEmpty ? _subtitle : 'پیکربندی کامل از اپ',
             onBack: () => AppScope.of(context).pop(),
           ),
           Expanded(
@@ -273,7 +289,7 @@ class _ModuleConfigScreenState extends State<ModuleConfigScreen> {
                             size: 'lg',
                             icon: 'check',
                             label:
-                                _saving ? 'در حال ذخیره…' : 'ذخیرهٔ تنظیمات',
+                                _saving ? 'در حال ذخیره…' : 'ذخیره تنظیمات',
                             onClick: _saving ? null : _save,
                           ),
                         ],

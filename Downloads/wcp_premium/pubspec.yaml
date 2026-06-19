@@ -1,0 +1,73 @@
+name: wcp_premium
+description: مدیریت ووکامرس پرمیوم — کنترل کامل فروشگاه و افزونه ووکامرس پلاس از موبایل
+publish_to: 'none'
+version: 1.2.0+35
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  path_drawing: ^1.0.1        # render the SVG-path icon set via CustomPainter
+  shared_preferences: ^2.2.2  # persist theme + onboarding (localStorage parity)
+  intl: ^0.20.2
+  http: ^1.2.2                # portal subscription API (wpp/v1) calls
+  url_launcher: ^6.3.1        # open support / external links (payment is Cafe Bazaar IAB)
+  pdf: ^3.11.1                # build the in-app invoice PDF (RTL + Vazirmatn)
+  printing: ^5.13.4           # native print / save-as-PDF / share sheet
+  file_picker: 8.1.7
+  record: ^7.1.0
+  audioplayers: ^6.7.1
+  path_provider: ^2.1.6
+  fl_chart: ^0.69.2           # data-view charts (audience/analytics/attribution…)
+
+dev_dependencies:
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.4.4
+
+flutter_native_splash:
+  color: "#0b0b0f"
+  image: assets/img/logo_fg.png
+  android_12:
+    color: "#0b0b0f"
+    image: assets/img/logo_fg.png
+  fullscreen: true
+
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: true
+  remove_alpha_ios: true
+  image_path: "assets/img/logo.png"
+  image_path_ios: "assets/img/logo_ios.png"
+  adaptive_icon_background: "assets/img/logo_bg.png"
+  adaptive_icon_foreground: "assets/img/logo_fg.png"
+  min_sdk_android: 21
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/img/
+
+  fonts:
+    - family: Vazirmatn
+      fonts:
+        - asset: assets/fonts/Vazirmatn-Light.ttf
+          weight: 300
+        - asset: assets/fonts/Vazirmatn-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Vazirmatn-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Vazirmatn-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Vazirmatn-Bold.ttf
+          weight: 700
+        - asset: assets/fonts/Vazirmatn-ExtraBold.ttf
+          weight: 800
+        - asset: assets/fonts/Vazirmatn-Black.ttf
+          weight: 900

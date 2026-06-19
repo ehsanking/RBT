@@ -32,11 +32,22 @@ import 'package:flutter/material.dart';
 // `registerAllScreens()` below.
 import 'account.dart';
 import 'assistant.dart';
+import 'business_intelligence.dart';
 import 'chat.dart';
 import 'commerce.dart';
 import 'content.dart';
 import 'customers.dart';
+import 'dashboards.dart';
+import 'booking_services.dart';
+import 'payment_providers.dart';
+import 'audience.dart';
+import 'wave2_stats.dart';
+import 'wave2c_stats.dart';
+import 'depth_data.dart';
 import 'engagement.dart';
+import 'forms.dart';
+import 'health_security.dart';
+import 'abandoned_cart.dart';
 import 'home.dart';
 import 'launch.dart';
 import 'module_config.dart';
@@ -50,6 +61,9 @@ import 'modules.dart';
 import 'more.dart';
 import 'order_create.dart';
 import 'orders.dart';
+import 'paylink.dart';
+import 'product_analytics.dart';
+import 'product_changes.dart';
 import 'product_create.dart';
 import 'products.dart';
 import 'states.dart';
@@ -93,6 +107,41 @@ void registerAllScreens() {
   registerNoticeBarsScreen();
   // Stop-sale per-rule CRUD (route 'mod_stop_sale_rules').
   registerStopSaleRulesScreen();
+  // Bulk product price/stock editor (route 'mod_product_changes') — overrides
+  // the generic placeholder registered by registerModulePagesScreen above.
+  registerProductChangesScreen();
+  // Abandoned-cart follow-up list + quick-CALL (route 'mod_abandoned_cart')
+  // — overrides the generic settings editor from kGridCuratedModules.
+  registerAbandonedCartScreen();
+  // Payment-links CRUD (route 'modcfg_paylink', reached from the store-feature
+  // row id 'paylink') — registered here since 'paylink' is NOT in
+  // kCuratedModuleIds, so this is its only registration.
+  registerPaylinkScreen();
+  // Form-builder list + submissions (route 'mod_forms') — overrides the
+  // generic settings editor from kGridCuratedModules ('forms').
+  registerFormsScreen();
+  // Operational dashboards: booking/rma/campaign/affiliate/subscription/b2b
+  // (routes 'modcfg_bookings' … reached from the store-feature rows).
+  registerDashboardsScreen();
+  // Booking SERVICES full CRUD (route 'mod_booking_services').
+  registerBookingServicesScreen();
+  // Payment providers (WC+ Iranian gateways) credentials (route 'mod_payments_providers').
+  registerPaymentProvidersScreen();
+  // Audience analytics DATA dashboard (route 'mod_audience' + settings gear).
+  // Registered AFTER registerModuleConfigScreen so the data view wins the key.
+  registerAudienceScreen();
+  // Wave-2 data views: auth stats, popup stats, attribution (data wins key).
+  registerWave2StatsScreens();
+  // Wave-2 2C data views: mini-app stats, social-tools send log.
+  registerWave2cStatsScreens();
+  // Depth data views: B2B credit accounts + subscription plans/MRR.
+  registerDepthDataScreens();
+  // Product-analytics dashboard (route 'mod_product_analytics').
+  registerProductAnalyticsScreen();
+  // Business-intelligence snapshot (route 'mod_business_intelligence').
+  registerBusinessIntelligenceScreen();
+  // Health & security audit (route 'mod_health_security').
+  registerHealthSecurityScreen();
   // Team-goals CRUD + workflow (route 'mod_team_goals' / 'team_goal').
   registerTeamGoalsScreen();
   registerUtilityScreen();

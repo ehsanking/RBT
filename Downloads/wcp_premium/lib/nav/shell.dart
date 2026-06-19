@@ -22,10 +22,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../theme/tokens.dart';
 import '../core/icons.dart';
 import '../core/fmt.dart';
+import '../core/native.dart';
 import '../widgets/ui.dart';
 import '../screens/registry.dart';
 import '../services/store_api.dart';
@@ -71,6 +73,7 @@ class AppScope extends InheritedWidget {
     required this.goTab,
     required this.showToast,
     required this.toggleTheme,
+    required this.setThemeMode,
     required this.themeMode,
     required this.activeTab,
     required this.navigate,
@@ -97,6 +100,9 @@ class AppScope extends InheritedWidget {
 
   /// Flip dark ⇄ light (MaterialApp owns the actual ThemeMode upstream).
   final VoidCallback toggleTheme;
+
+  /// Set a specific theme mode (light/dark/system) — settings selector.
+  final void Function(ThemeMode) setThemeMode;
 
   /// Current effective theme mode (light/dark — never `system` here).
   final ThemeMode themeMode;
@@ -139,14 +145,18 @@ class AppShell extends StatefulWidget {
     super.key,
     required this.themeMode,
     required this.onToggleTheme,
+    required this.onSetThemeMode,
     required this.onLogout,
   });
 
   /// Effective theme mode, owned by `WcpApp` (so MaterialApp can react).
   final ThemeMode themeMode;
 
-  /// Ask `WcpApp` to flip the theme.
+  /// Ask `WcpApp` to flip the theme (light⇄dark, top-bar quick toggle).
   final VoidCallback onToggleTheme;
+
+  /// Ask `WcpApp` to set a specific theme mode (light/dark/system selector).
+  final void Function(ThemeMode) onSetThemeMode;
 
   /// Sign out: clear stored credentials and return to the connect flow.
   /// Wired up the launch-flow's `setPhase('connect')` after `disconnect()`.
@@ -159,6 +169,9 @@ class AppShell extends StatefulWidget {
 class _AppShellState extends State<AppShell> {
   int _index = 0;
   final bool _offline = false;
+  // True while the «خروج از برنامه؟» confirm dialog is open, so a second BACK
+  // does not stack another copy.
+  bool _exitDialogOpen = false;
 
   // One Navigator per tab; keys let us push/pop into the active tab.
   late final List<GlobalKey<NavigatorState>> _navKeys = List.generate(
@@ -212,6 +225,43 @@ class _AppShellState extends State<AppShell> {
         },
       );
     }
+    // One-shot: ask Cafe Bazaar whether a newer version is published, prompt if so.
+    _maybeCheckUpdate();
+  }
+
+  /// Non-blocking, once per launch: if Bazaar reports a newer published version,
+  /// show a gentle prompt to update (deep-links into Bazaar). Silent otherwise
+  /// (already up-to-date, or not running inside Bazaar → state 'error').
+  Future<void> _maybeCheckUpdate() async {
+    final Map<String, dynamic> r = await Native.checkBazaarUpdate();
+    if (!mounted || r['state'] != 'need') return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('نسخه‌ی جدید موجود است'),
+          content: const Text(
+            'نسخه‌ی تازه‌ای از اپ در کافه‌بازار منتشر شده. برای دریافت آخرین قابلیت‌ها '
+            'و رفع اشکال‌ها، به‌روزرسانی کنید.',
+            style: TextStyle(fontSize: 13, height: 1.9),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('بعدا'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                Native.startBazaarUpdate();
+              },
+              child: const Text('به‌روزرسانی'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -232,6 +282,49 @@ class _AppShellState extends State<AppShell> {
   void _pop() {
     final NavigatorState? nav = _activeNav.currentState;
     if (nav != null && nav.canPop()) nav.pop();
+  }
+
+  /// Hardware/gesture BACK handler (wired via PopScope on the shell). Previously
+  /// the system back went to the ROOT navigator — which holds only the shell —
+  /// so it could not pop and EXITED the app from every screen. Now: pop the
+  /// active tab's own navigator (sub-screen or bottom-sheet) → else jump to the
+  /// home tab → else, only at the home root, ask «خروج از برنامه؟ بله/خیر».
+  void _onBack() {
+    final NavigatorState? nav = _activeNav.currentState;
+    if (nav != null && nav.canPop()) {
+      nav.pop();
+      return;
+    }
+    if (_index != 0) {
+      setState(() => _index = 0);
+      return;
+    }
+    _confirmExit();
+  }
+
+  /// At the home root, BACK asks for explicit confirmation before leaving the
+  /// app (Yes/No), instead of silently exiting on a double-tap.
+  Future<void> _confirmExit() async {
+    if (_exitDialogOpen) return; // guard against a second BACK opening a stack
+    _exitDialogOpen = true;
+    final bool? yes = await showWcpDialog<bool>(
+      context,
+      icon: 'logout',
+      title: 'خروج از برنامه',
+      message: 'می‌خواهید از برنامه خارج شوید؟',
+      actions: [
+        WcpButton(
+            variant: 'secondary',
+            label: 'خیر',
+            onClick: () => Navigator.of(context).pop(false)),
+        WcpButton(
+            variant: 'primary',
+            label: 'بله',
+            onClick: () => Navigator.of(context).pop(true)),
+      ],
+    );
+    _exitDialogOpen = false;
+    if (yes == true) SystemNavigator.pop(); // exit the app
   }
 
   void _goTab(String id) {
@@ -292,14 +385,24 @@ class _AppShellState extends State<AppShell> {
       goTab: _goTab,
       showToast: _showToast,
       toggleTheme: _toggleTheme,
+      setThemeMode: widget.onSetThemeMode,
       themeMode: widget.themeMode,
       activeTab: _activeTabId,
       navigate: _activeNav,
       logout: widget.onLogout,
       hideFab: _hideFab,
       showFab: _showFab,
-      child: Scaffold(
-        backgroundColor: context.c.bg0,
+      child: PopScope(
+        // We own ALL back handling (canPop:false → never auto-pop/exit). Routes
+        // ABOVE the shell on the ROOT navigator (dialogs/full-screen pages) still
+        // pop normally — this only fires when the shell itself would be popped.
+        canPop: false,
+        onPopInvokedWithResult: (bool didPop, Object? result) {
+          if (didPop) return;
+          _onBack();
+        },
+        child: Scaffold(
+          backgroundColor: context.c.bg0,
         // Keep our own bottom bar laid out manually (raised hub overflows).
         body: Stack(
           children: [
@@ -406,6 +509,7 @@ class _AppShellState extends State<AppShell> {
           ],
         ),
       ),
+        ),
     );
   }
 }
@@ -1020,7 +1124,7 @@ class _UnderConstruction extends StatelessWidget {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'صفحهٔ «$name» در فاز بعدی ساخته می‌شود',
+                      'صفحه «$name» در فاز بعدی ساخته می‌شود',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontFamily: T.family,

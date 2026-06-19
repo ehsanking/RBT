@@ -16,6 +16,7 @@
 // StoreResult(ok:false, error:<Persian message>) so the UI can show a
 // graceful state instead of throwing.
 // ════════════════════════════════════════════════════════════════
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -450,7 +451,34 @@ class StoreApi {
   static Future<StoreResult> appWallet({int? userId}) =>
       wcpGet('/app/wallet', query: userId != null ? {'user_id': '$userId'} : null);
 
-  /// Paginated store-wide wallet ledger («مشاهدهٔ همهٔ تراکنش‌ها»). Returns
+  /// GET /app/bi → business-intelligence snapshot (KPIs + suggestions).
+  static Future<StoreResult> appBI({int days = 30}) =>
+      wcpGet('/app/bi', query: <String, String>{'days': '$days'});
+
+  /// GET /app/security → health/security audit (score + checks + counts).
+  static Future<StoreResult> appSecurity() => wcpGet('/app/security');
+
+  /// GET /app/hosting → hosting/PHP + performance + health + security tests.
+  static Future<StoreResult> appHosting() => wcpGet('/app/hosting');
+
+  /// POST /app/hosting/run → trigger a fresh async diagnostics run.
+  static Future<StoreResult> hostingRun() =>
+      wcpPost('/app/hosting/run', const <String, dynamic>{});
+
+  // Wave-2 data views.
+  static Future<StoreResult> authStats({int days = 30}) =>
+      wcpGet('/app/auth/stats', query: <String, String>{'days': '$days'});
+  static Future<StoreResult> popups() => wcpGet('/app/popups');
+  static Future<StoreResult> miniAppStats() => wcpGet('/app/mini-app/stats');
+  static Future<StoreResult> socialLogStats({int days = 30}) =>
+      wcpGet('/app/social/log-stats', query: <String, String>{'days': '$days'});
+  static Future<StoreResult> attribution({String? from, String? to}) =>
+      wcpGet('/app/attribution', query: <String, String>{
+        if (from != null) 'from': from,
+        if (to != null) 'to': to,
+      });
+
+  /// Paginated store-wide wallet ledger («مشاهده همه تراکنش‌ها»). Returns
   /// `{ok, total, page, items:[…]}`.
   static Future<StoreResult> walletTransactions({int page = 1, int perPage = 30}) =>
       wcpGet('/app/wallet/transactions',
@@ -853,7 +881,7 @@ class StoreApi {
   static Future<StoreResult> noticeBarDelete(String id) =>
       wcpPost('/app/notice-bars/$id/delete', <String, dynamic>{});
 
-  // ── Stop-sale rules CRUD (قوانینِ توقفِ فروش) ─────────────────────
+  // ── Stop-sale rules CRUD (قوانین توقف فروش) ─────────────────────
   /// List rules + the `add_fields` schema (category/role options prefilled).
   static Future<StoreResult> stopSaleRules() => wcpGet('/app/stop-sale-rules');
   static Future<StoreResult> stopSaleRule(String id) =>
@@ -880,6 +908,146 @@ class StoreApi {
       wcpPost('/app/team-goals/$id/rate', <String, dynamic>{'rating': rating});
   static Future<StoreResult> teamGoalDelete(String id) =>
       wcpPost('/app/team-goals/$id/delete', <String, dynamic>{});
+
+  // ── Abandoned-cart follow-up (سبد رها‌شده) ───────────────────────
+  /// Pending/failed/on-hold orders past the threshold (`items`, `has_more`,
+  /// `threshold_minutes`); each row has the customer phone for a CALL.
+  static Future<StoreResult> abandonedCarts({int page = 1}) =>
+      wcpGet('/app/abandoned-carts', query: <String, String>{'page': '$page'});
+
+  /// Send the module's SMS reminder (coupon + recovery link) for one order.
+  static Future<StoreResult> abandonedRemind(int orderId) =>
+      wcpPost('/app/abandoned-carts/$orderId/remind', <String, dynamic>{});
+
+  // ── Payment links / درخواست وجه (WooPlus_Paylink) ────────────────
+  /// All links with public `url` + live `state` (+ `has_gateway`).
+  static Future<StoreResult> paylinks() => wcpGet('/app/paylinks');
+
+  /// Create a link. `values`: title, type(amount|product), amount, items[],
+  /// customer_phone, note, reusable, expires_hours. Returns `{id, url}`.
+  static Future<StoreResult> paylinkCreate(Map<String, dynamic> values) =>
+      wcpPost('/app/paylinks', values);
+
+  static Future<StoreResult> paylinkActive(int id, bool active) =>
+      wcpPost('/app/paylinks/$id/active', <String, dynamic>{'active': active});
+
+  static Future<StoreResult> paylinkDelete(int id) =>
+      wcpPost('/app/paylinks/$id/delete', <String, dynamic>{});
+
+  // ── Form-builder: list forms + manage submissions (فرم‌ساز) ──────
+  /// Published forms with per-form submission counts (+ `total`/`total_new`).
+  static Future<StoreResult> forms() => wcpGet('/app/forms');
+
+  /// Paged submissions (`items`, `has_more`, `total`). Filter by form/status/search.
+  static Future<StoreResult> formSubmissions(
+          {int? form, String? status, String? search, int page = 1}) =>
+      wcpGet('/app/forms/submissions', query: <String, String>{
+        'page': '$page',
+        if (form != null && form > 0) 'form': '$form',
+        if (status != null && status.isNotEmpty) 'status': status,
+        if (search != null && search.isNotEmpty) 'search': search,
+      });
+
+  /// One submission's full field list (`fields:[{label,value}]`).
+  static Future<StoreResult> formSubmission(int id) =>
+      wcpGet('/app/forms/submissions/$id');
+
+  /// Set a submission status: new | seen | done | spam.
+  static Future<StoreResult> formSubmissionStatus(int id, String status) =>
+      wcpPost('/app/forms/submissions/$id/status',
+          <String, dynamic>{'status': status});
+
+  // ── In-person pickup (تحویل حضوری) — order action ────────────────
+  /// `action` = mark_ready | mark_collected. mark_ready fires the lifecycle
+  /// SMS/email per the module settings. Returns the order's new `status`.
+  static Future<StoreResult> pickupAction(int orderId, String action) =>
+      wcpPost('/app/order/$orderId/pickup-action',
+          <String, dynamic>{'action': action});
+
+  // ── Operational dashboards (رزرو / مرجوعی / کمپین / همکاری / اشتراک / B2B) ──
+  // Booking / reservations («رزرو/نوبت‌دهی»).
+  static Future<StoreResult> bookings(
+          {int page = 1, String? status, String? search}) =>
+      wcpGet('/app/bookings', query: <String, String>{
+        'page': '$page',
+        if (status != null && status.isNotEmpty) 'status': status,
+        if (search != null && search.isNotEmpty) 'search': search,
+      });
+  static Future<StoreResult> bookingConfirm(int id) =>
+      wcpPost('/app/bookings/$id/confirm', <String, dynamic>{});
+  static Future<StoreResult> bookingCancel(int id) =>
+      wcpPost('/app/bookings/$id/cancel', <String, dynamic>{});
+  static Future<StoreResult> bookingDone(int id) =>
+      wcpPost('/app/bookings/$id/done', <String, dynamic>{});
+  // Booking SERVICES CRUD (full parity with the web panel) + KPI stats.
+  static Future<StoreResult> bookingServices() =>
+      wcpGet('/app/booking/services');
+  static Future<StoreResult> bookingServiceSave(Map<String, dynamic> body) =>
+      wcpPost('/app/booking/services', body);
+  static Future<StoreResult> bookingServiceDelete(int id) =>
+      wcpPost('/app/booking/services/$id/delete', <String, dynamic>{});
+  static Future<StoreResult> bookingStats() => wcpGet('/app/booking/stats');
+
+  // Payment gateways (WC+ providers) — per-provider credentials + enable + test.
+  static Future<StoreResult> paymentProviders() =>
+      wcpGet('/app/payments/providers');
+  static Future<StoreResult> paymentProviderSave(
+          String slug, Map<String, dynamic> values,
+          {required bool enabled}) =>
+      wcpPost('/app/payments/providers/$slug',
+          <String, dynamic>{'values': values, 'enabled': enabled});
+  static Future<StoreResult> paymentProviderTest(
+          String slug, Map<String, dynamic> values) =>
+      wcpPost('/app/payments/providers/$slug/test',
+          <String, dynamic>{'values': values});
+
+  // Returns / RMA («مرجوعی»).
+  static Future<StoreResult> rmas({int page = 1, String? status}) =>
+      wcpGet('/app/rmas', query: <String, String>{
+        'page': '$page',
+        if (status != null && status.isNotEmpty) 'status': status,
+      });
+  static Future<StoreResult> rmaStatus(int id, String status, {String? note}) =>
+      wcpPost('/app/rmas/$id/status', <String, dynamic>{
+        'status': status,
+        if (note != null && note.isNotEmpty) 'note': note,
+      });
+  static Future<StoreResult> rmaRefund(int id, num amount) =>
+      wcpPost('/app/rmas/$id/refund', <String, dynamic>{'amount': amount});
+
+  // SMS campaigns («کمپین پیامکی»).
+  static Future<StoreResult> campaigns() => wcpGet('/app/campaigns');
+  static Future<StoreResult> campaignCreate(Map<String, dynamic> values) =>
+      wcpPost('/app/campaigns', values);
+  static Future<StoreResult> campaignCancel(int id) =>
+      wcpPost('/app/campaigns/$id/cancel', <String, dynamic>{});
+
+  // Affiliate («همکاری در فروش»).
+  static Future<StoreResult> affiliates() => wcpGet('/app/affiliates');
+  static Future<StoreResult> affiliatePay(int id) =>
+      wcpPost('/app/affiliates/$id/pay', <String, dynamic>{});
+
+  // Subscription members («اعضای اشتراک») — read-only.
+  static Future<StoreResult> subscriptionMembers(
+          {int page = 1, String? status}) =>
+      wcpGet('/app/subscription-members', query: <String, String>{
+        'page': '$page',
+        if (status != null && status.isNotEmpty) 'status': status,
+      });
+
+  // B2B approvals («تایید عمده‌فروشی»).
+  static Future<StoreResult> b2bApprovals({int page = 1}) =>
+      wcpGet('/app/b2b-approvals', query: <String, String>{'page': '$page'});
+  // B2B credit customers («حساب‌های عمده‌فروشی») — read-only depth view.
+  static Future<StoreResult> b2bCustomers() => wcpGet('/app/b2b/customers');
+  // Subscription plans + MRR («طرح‌های اشتراک») — read-only depth view.
+  static Future<StoreResult> subscriptionPlans() =>
+      wcpGet('/app/subscription/plans');
+  static Future<StoreResult> b2bDecide(int id, String decision, {String? note}) =>
+      wcpPost('/app/b2b-approvals/$id/decide', <String, dynamic>{
+        'decision': decision,
+        if (note != null && note.isNotEmpty) 'note': note,
+      });
 
   /// Run a declared module action (e.g. a test/sync button).
   static Future<StoreResult> moduleAction(String id, String action,
@@ -1024,6 +1192,18 @@ class StoreApi {
   static Future<StoreResult> updateOrder(int id, Map<String, dynamic> body) =>
       wcPut('/orders/$id', body);
 
+  /// Create a REAL WooCommerce refund for an order. Adjusts the order totals +
+  /// restocks, and (api_refund=true) asks the payment gateway to return the
+  /// money when it supports refunds. `amount` is a plain number string in the
+  /// store currency; empty `amount` = full refund.
+  static Future<StoreResult> refundOrder(int id,
+          {required String amount, String reason = '', bool apiRefund = true}) =>
+      wcPost('/orders/$id/refunds', <String, dynamic>{
+        if (amount.isNotEmpty) 'amount': amount,
+        'reason': reason,
+        'api_refund': apiRefund,
+      });
+
   /// Trash an order (force:false → recoverable). Never hard-deletes.
   static Future<StoreResult> deleteOrder(int id, {bool force = false}) =>
       wcDelete('/orders/$id', query: <String, String>{'force': '$force'});
@@ -1142,6 +1322,111 @@ class StoreApi {
         'per_page': '100',
       });
 
+  /// FALLBACK for [revenueStats] when the WC-Admin analytics lookup tables are
+  /// empty — which happens on any store whose cron / Action Scheduler never
+  /// ran (so `wc_order_stats` was never populated). VERY common on Iranian
+  /// hosts. Without this the dashboard would show 0 sales despite real orders.
+  ///
+  /// Builds the SAME `{totals, intervals[]}` shape [revenueStats] returns, but
+  /// straight from raw `wc/v3/orders` — so [dashboardFromWoo] parses it
+  /// unchanged. Sums the paid-ish statuses (completed/processing/on-hold) and
+  /// buckets per [interval]. Best-effort: capped at ~600 orders per window.
+  static Future<StoreResult> salesFromOrders({
+    required String after,
+    required String before,
+    String interval = 'day',
+  }) async {
+    const Set<String> salesStatuses = <String>{
+      'completed',
+      'processing',
+      'on-hold',
+    };
+    final List<Map<String, dynamic>> all = <Map<String, dynamic>>[];
+    for (int page = 1; page <= 6; page++) {
+      final StoreResult r = await wcGet('/orders', query: <String, String>{
+        'after': after,
+        'before': before,
+        'per_page': '100',
+        'page': '$page',
+        'order': 'asc',
+        'orderby': 'date',
+        '_fields': 'id,total,status,date_created',
+      });
+      if (!r.ok) {
+        if (page == 1) return r; // surface the failure
+        break;
+      }
+      final List<Map<String, dynamic>> chunk = r.list;
+      all.addAll(chunk);
+      if (chunk.length < 100) break;
+    }
+
+    num totalRev = 0;
+    int orderCount = 0;
+    final Map<String, List<num>> buckets = <String, List<num>>{};
+    for (final Map<String, dynamic> o in all) {
+      if (!salesStatuses.contains((o['status'] ?? '').toString())) continue;
+      final num t = num.tryParse('${o['total']}') ?? 0;
+      totalRev += t;
+      orderCount += 1;
+      final DateTime? d = DateTime.tryParse('${o['date_created']}');
+      final String key = d == null ? '' : _bucketKey(d, interval);
+      final List<num> b = buckets.putIfAbsent(key, () => <num>[0, 0]);
+      b[0] += t;
+      b[1] += 1;
+    }
+
+    final List<String> keys =
+        buckets.keys.where((String k) => k.isNotEmpty).toList()..sort();
+    final List<Map<String, dynamic>> intervals = <Map<String, dynamic>>[
+      for (final String k in keys)
+        <String, dynamic>{
+          'date_start': k,
+          'subtotals': <String, dynamic>{
+            'net_revenue': buckets[k]![0],
+            'orders_count': buckets[k]![1],
+          },
+        },
+    ];
+
+    return StoreResult(ok: true, data: <String, dynamic>{
+      'totals': <String, dynamic>{
+        'net_revenue': totalRev,
+        'total_sales': totalRev,
+        'orders_count': orderCount,
+      },
+      'intervals': intervals,
+    });
+  }
+
+  /// True when an analytics revenue report carries no sales at all (used to
+  /// decide whether to fall back to [salesFromOrders]).
+  static bool revenueReportEmpty(Map<String, dynamic> report) {
+    final Map<String, dynamic> t = report['totals'] is Map
+        ? Map<String, dynamic>.from(report['totals'] as Map)
+        : const <String, dynamic>{};
+    final int orders = int.tryParse('${t['orders_count']}') ?? 0;
+    final num rev = num.tryParse('${t['net_revenue']}') ?? 0;
+    return orders == 0 && rev == 0;
+  }
+
+  /// Bucket key (= analytics `date_start` string) for [d] at [interval].
+  static String _bucketKey(DateTime d, String interval) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    switch (interval) {
+      case 'hour':
+        return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:00:00';
+      case 'month':
+        return '${d.year}-${two(d.month)}-01 00:00:00';
+      case 'week':
+        final DateTime monday = d.subtract(Duration(days: d.weekday - 1));
+        return '${monday.year}-${two(monday.month)}-${two(monday.day)} 00:00:00';
+      case 'day':
+      default:
+        return '${d.year}-${two(d.month)}-${two(d.day)} 00:00:00';
+    }
+  }
+
   /// New-customers stats over [after,before] (totals.customers_count +
   /// per-interval subtotals for the sparkline).
   static Future<StoreResult> customersStats({
@@ -1192,7 +1477,12 @@ class StoreApi {
     String interval,
   }) periodRange(String range) {
     final DateTime now = DateTime.now();
-    final DateTime before = now;
+    // Upper bound = END of today, not the exact instant. WC interprets the
+    // before/after bounds in the STORE's timezone, so a device clock that lags
+    // (or a phone in a different timezone than the store) would otherwise drop
+    // orders placed "later today" — making the dashboard read 0. End-of-day is
+    // also what a merchant means by «امروز / این هفته».
+    final DateTime before = DateTime(now.year, now.month, now.day, 23, 59, 59);
     late DateTime after;
     late String interval;
     switch (range) {
@@ -1278,6 +1568,11 @@ class StoreApi {
           r = await http.get(uri, headers: h).timeout(_timeout);
       }
       return _parse(r);
+    } on TimeoutException {
+      // Exceeded the hard timeout — almost always slow server / weak network.
+      return const StoreResult(
+          ok: false,
+          error: 'دریافت اطلاعات بیش از حد طول کشید؛ بستگی به سرور و سرعت اینترنت شما دارد. دوباره تلاش کنید.');
     } catch (e) {
       return StoreResult(
           ok: false, error: 'ارتباط با فروشگاه برقرار نشد (${e.runtimeType}).');

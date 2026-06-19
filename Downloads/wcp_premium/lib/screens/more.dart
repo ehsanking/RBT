@@ -24,6 +24,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/fmt.dart';
 import '../core/icons.dart';
 import '../core/native.dart';
+import '../core/shake_report.dart';
 import '../core/subs.dart';
 import '../data/sample.dart';
 import '../nav/shell.dart';
@@ -65,7 +66,7 @@ const Color _goldSoft = Color(0x29E0A52E); // rgba(224,165,46,.16)
 /// `--dart-define=APP_VERSION=<pubspec.version>` so the footer line and the
 /// «دستگاه‌های فعال» screen never go stale relative to pubspec.yaml.
 const String _appVersion =
-    String.fromEnvironment('APP_VERSION', defaultValue: '1.0.0+4');
+    String.fromEnvironment('APP_VERSION', defaultValue: kAppVersionLabel);
 
 /// `1.0.0+4` → «۱٫۰٫۰ (۴)». The raw `semver+build` string renders mangled on an
 /// RTL line — the `+build` suffix gets bidi-reordered to the front, so the
@@ -98,21 +99,12 @@ const Map<String, String> _faCurrencyNames = {
 String _currencyDisplay(String code, String wcLabel) =>
     _faCurrencyNames[code] ?? (wcLabel.isNotEmpty ? wcLabel : code);
 
-/// Chat-notification tone choices for the «صدای گفتگو» setting (ITEM 6).
-/// Stored value (shared_prefs key 'chat_notif_sound') is the stable english
-/// key; the Persian label is for display only. No native channel / sound is
-/// built here yet — this is purely the persisted preference (FCM transport is
-/// a later phase). Default is the system tone.
-const Map<String, String> _chatSoundNames = {
-  'default': 'پیش‌فرض سیستم',
-  'tone1': 'زنگ ۱',
-  'tone2': 'زنگ ۲',
-  'silent': 'سکوت',
-};
-const String _chatSoundDefault = 'default';
-
-String _chatSoundLabel(String key) =>
-    _chatSoundNames[key] ?? _chatSoundNames[_chatSoundDefault]!;
+/// «صدای گفتگو» (ITEM 6) — the chat-notification tone. Tapping the row opens
+/// the SYSTEM ringtone picker (Native.pickNotificationSound) which already
+/// offers Default + Silent + every installed tone; native persists the chosen
+/// URI + rebuilds the notification channel. We cache only the display LABEL
+/// (shared_prefs 'chat_sound_label') to show on the row.
+const String _chatSoundDefaultLabel = 'پیش‌فرض سیستم';
 
 // ════════════════════════════════════════════════════════════════
 // MORE TAB
@@ -152,12 +144,12 @@ class MoreScreen extends StatelessWidget {
         ),
         _MoreItem(
           icon: 'settings',
-          label: 'تنظیماتِ عمومیِ فروشگاه',
-          sub: 'تقویم جلالی، اعداد فارسی، پوسته، رنگِ برند…',
+          label: 'تنظیمات عمومی فروشگاه',
+          sub: 'تقویم جلالی، اعداد فارسی، پوسته، رنگ برند…',
           color: c.accent,
           go: (ctx) => AppScope.of(ctx).push('moduleSettings', {
             'key': 'general',
-            'title': 'تنظیماتِ عمومیِ فروشگاه',
+            'title': 'تنظیمات عمومی فروشگاه',
             'useConfig': true,
           }),
         ),
@@ -178,9 +170,9 @@ class MoreScreen extends StatelessWidget {
         _MoreItem(
           icon: 'card',
           label: 'درگاه‌های پرداخت',
-          sub: 'فعال/غیرفعال‌سازی در همین‌جا',
+          sub: 'اعتبارها، فعال‌سازی و تست اتصال',
           color: c.success,
-          go: (ctx) => AppScope.of(ctx).push('payments'),
+          go: (ctx) => AppScope.of(ctx).push('mod_payments_providers'),
         ),
         _MoreItem(
           icon: 'truck',
@@ -223,7 +215,7 @@ class MoreScreen extends StatelessWidget {
         _MoreItem(
           icon: 'help',
           label: 'راهنما و آموزش',
-          sub: 'سؤالات متداول',
+          sub: 'سوالات متداول',
           color: c.info,
           go: (ctx) => AppScope.of(ctx).push('support'),
         ),
@@ -371,9 +363,35 @@ class MoreScreen extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
-                  'نسخهٔ ${_versionLabel()} · WPP · ساخته‌شده برای ووکامرس پلاس',
+                  'نسخه ${_versionLabel()} · WPP · ساخته‌شده برای ووکامرس پلاس',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 11.5, color: c.tx3),
+                ),
+              ),
+              // Copyright / credits — Instagram + website as tappable icons.
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _CreditIcon(
+                      icon: 'instagram',
+                      tooltip: 'instagram.com/ehsanking',
+                      onTap: () => launchUrl(
+                        Uri.parse('https://instagram.com/ehsanking'),
+                        mode: LaunchMode.externalApplication,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    _CreditIcon(
+                      icon: 'globe',
+                      tooltip: 'wooplusplugin.com',
+                      onTap: () => launchUrl(
+                        Uri.parse('https://wooplusplugin.com'),
+                        mode: LaunchMode.externalApplication,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -393,6 +411,39 @@ class MoreScreen extends StatelessWidget {
 }
 
 // ── A titled group: small caption + a pad-0 card of rows ──────────
+// A round, tappable credit icon (Instagram / website) for the footer.
+class _CreditIcon extends StatelessWidget {
+  const _CreditIcon(
+      {required this.icon, required this.tooltip, required this.onTap});
+
+  final String icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Tooltip(
+      message: tooltip,
+      child: InkResponse(
+        onTap: onTap,
+        radius: 26,
+        child: Container(
+          width: 40,
+          height: 40,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: c.bg2,
+            shape: BoxShape.circle,
+            border: Border.all(color: c.line, width: 1),
+          ),
+          child: WcpIcon(icon, size: 19, color: c.tx2),
+        ),
+      ),
+    );
+  }
+}
+
 class _GroupBlock extends StatelessWidget {
   const _GroupBlock({required this.group});
 
@@ -762,7 +813,7 @@ class _PremiumBanner extends StatelessWidget {
                           child: Opacity(
                             opacity: 0.9,
                             child: Text(
-                              'مدیریت اشتراک',
+                              'زمان باقی‌مانده اشتراک شما',
                               style: TextStyle(fontSize: 12.5, color: white),
                             ),
                           ),
@@ -889,8 +940,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _sms = false;
   bool _biometric = true;
   bool _sound = true;
+  bool _shakeReport = true; // «گزارش خطا با تکان دادن»
   // Chat-notification tone (ITEM 6) — persisted as a string key, picker-driven.
-  String _chatSound = _chatSoundDefault;
+  String _chatSound = _chatSoundDefaultLabel;
 
   // Live store currency, mirrored from WooCommerce (general settings).
   String _currencyCode = '';
@@ -984,24 +1036,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // currency picker) and persists the chosen key to shared_prefs under
   // 'chat_notif_sound'. NO native NotificationChannel / sound is built here —
   // this is purely the setting; transport lands in a later FCM phase.
-  void _openChatSoundPicker() {
-    showWcpSheet<void>(
-      context,
-      title: 'صدای گفتگو',
-      child: _ChatSoundPickerSheet(
-        current: _chatSound,
-        onPick: _applyChatSound,
-      ),
-    );
-  }
-
-  void _applyChatSound(String key) {
-    Navigator.of(context).pop();
-    if (key == _chatSound) return;
-    setState(() => _chatSound = key);
-    _saveString('chat_notif_sound', key);
-    _toast('صدای گفتگو روی «${_chatSoundLabel(key)}» تنظیم شد.',
-        kind: 'success');
+  // Opens the SYSTEM ringtone picker (Default + Silent + all installed tones).
+  // Native persists the URI + rebuilds the channel; we cache the label to show.
+  Future<void> _pickChatSound() async {
+    final Map<String, String>? r = await Native.pickNotificationSound();
+    if (!mounted || r == null) return; // cancelled
+    final String name =
+        (r['name'] ?? '').isNotEmpty ? r['name']! : _chatSoundDefaultLabel;
+    setState(() => _chatSound = name);
+    _saveString('chat_sound_label', name);
+    _toast('صدای گفتگو روی «$name» تنظیم شد.', kind: 'success');
   }
 
   // Biometric toggle — turning it ON actually runs a native BiometricPrompt
@@ -1016,17 +1060,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final bool available = await Native.biometricAvailable();
     if (!mounted) return;
     if (!available) {
-      _toast('این دستگاه قفلِ بایومتریک/رمز ندارد یا تنظیم نشده است.',
+      _toast('این دستگاه قفل بایومتریک/رمز ندارد یا تنظیم نشده است.',
           kind: 'info', icon: 'faceid');
       return;
     }
     final bool ok = await Native.biometricAuthenticate(
-        reason: 'برای فعال‌سازیِ ورودِ بایومتریک احراز هویت کنید');
+        reason: 'برای فعال‌سازی ورود بایومتریک احراز هویت کنید');
     if (!mounted) return;
     if (ok) {
       setState(() => _biometric = true);
       _save('set_biometric', true);
-      _toast('ورودِ بایومتریک فعال شد.', kind: 'success');
+      _toast('ورود بایومتریک فعال شد.', kind: 'success');
     } else {
       _toast('احراز هویت ناموفق بود.', kind: 'error', icon: 'alert');
     }
@@ -1044,9 +1088,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _sms = p.getBool('set_sms') ?? false;
         _biometric = p.getBool('set_biometric') ?? true;
         _sound = p.getBool('set_sound') ?? true;
-        _chatSound = p.getString('chat_notif_sound') ?? _chatSoundDefault;
+        _shakeReport = p.getBool('shake_report_enabled') ?? true;
+        _chatSound = p.getString('chat_sound_label') ?? _chatSoundDefaultLabel;
       });
     } catch (_) {}
+  }
+
+  // «گزارش خطا با تکان دادن» — start/stop the accelerometer listener live.
+  Future<void> _toggleShakeReport(bool v) async {
+    setState(() => _shakeReport = v);
+    await setShakeReportEnabled(v);
+    _toast(
+      v ? 'گزارش با تکان دادن فعال شد.' : 'گزارش با تکان دادن خاموش شد.',
+      kind: v ? 'success' : 'info',
+    );
+  }
+
+  // SMS notifications cost money + depend on a configured SMS gateway — confirm
+  // with a clear warning before enabling (covers the Digits-instead-of-our-login
+  // case the owner asked about).
+  Future<void> _toggleSms(bool v) async {
+    if (!v) {
+      setState(() => _sms = false);
+      _save('set_sms', false);
+      return;
+    }
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('فعال‌سازی اعلان پیامکی',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+          content: const Text(
+            'اعلان‌های پیامکی از سامانه پیامکی فروشگاه و شماره موبایل پروفایل ارسال می‌شود و '
+            'هزینه هر پیامک از اعتبار سامانه شما کسر می‌گردد.\n\n'
+            'برای کارکرد باید درگاه پیامک در ووکامرس پلاس تنظیم باشد. اگر ماژول ورود/ثبت‌نام ما را '
+            'فعال نکرده‌اید و از Digits استفاده می‌کنید، پیامک‌ها از همان درگاه پیامک Digits می‌رود — '
+            'پس درگاه پیامک را در تنظیمات Digits یا ووکامرس پلاس فعال نگه دارید.',
+            style: TextStyle(fontSize: 13, height: 1.9),
+          ),
+          actions: <Widget>[
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('انصراف')),
+            TextButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('متوجه شدم، فعال کن')),
+          ],
+        ),
+      ),
+    );
+    if (ok == true) {
+      setState(() => _sms = true);
+      _save('set_sms', true);
+      _toast('اعلان پیامکی فعال شد.', kind: 'success');
+    }
   }
 
   Future<void> _save(String key, bool val) async {
@@ -1163,12 +1260,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     icon: 'message',
                     color: context.c.success,
                     label: 'پیامک',
-                    sub: 'هشدارهای مهم',
+                    sub: 'هشدارهای مهم · شامل هزینه',
                     on: _sms,
-                    onChange: (v) {
-                      setState(() => _sms = v);
-                      _save('set_sms', v);
-                    },
+                    onChange: _toggleSms,
                   ),
                   const _Sep(),
                   _ToggleRow(
@@ -1189,9 +1283,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     icon: 'message',
                     iconColor: context.c.accent,
                     title: 'صدای گفتگو',
-                    sub: _chatSoundLabel(_chatSound),
+                    sub: _chatSound,
                     chevron: true,
-                    onClick: _openChatSoundPicker,
+                    onClick: _pickChatSound,
                   ),
                 ],
               ),
@@ -1235,12 +1329,69 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _SettingsGroup(
                 title: 'نمایش',
                 children: [
-                  ListRow(
-                    icon: 'moon',
-                    iconColor: context.c.accent,
-                    title: 'پوسته',
-                    sub: 'از کنترل بالای صفحه قابل تغییر است',
-                  ),
+                  Builder(builder: (context) {
+                    final ThemeMode tm = AppScope.of(context).themeMode;
+                    Widget chip(String label, ThemeMode mode) {
+                      final bool sel = tm == mode;
+                      return Expanded(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () =>
+                              AppScope.of(context).setThemeMode(mode),
+                          child: Container(
+                            margin: const EdgeInsets.symmetric(horizontal: 3),
+                            padding: const EdgeInsets.symmetric(vertical: 11),
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: sel ? context.c.accentSoft : context.c.bg1,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: sel ? context.c.accent : context.c.line,
+                                width: 1.5,
+                              ),
+                            ),
+                            child: Text(
+                              label,
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w700,
+                                color:
+                                    sel ? context.c.accentText : context.c.tx2,
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }
+
+                    return Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Padding(
+                            padding:
+                                const EdgeInsets.only(right: 2, bottom: 10),
+                            child: Text(
+                              'پوسته',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                color: context.c.tx1,
+                              ),
+                            ),
+                          ),
+                          Row(
+                            children: [
+                              chip('روشن', ThemeMode.light),
+                              chip('تیره', ThemeMode.dark),
+                              chip('سیستمی', ThemeMode.system),
+                            ],
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
                   const _Sep(),
                   ListRow(
                     icon: 'layers',
@@ -1251,6 +1402,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     onClick: () =>
                         _toast('این نسخه به‌صورت کامل فارسی ارائه می‌شود.',
                             kind: 'info'),
+                  ),
+                  const _Sep(),
+                  _ToggleRow(
+                    icon: 'alert',
+                    color: context.c.accent,
+                    label: 'گزارش خطا با تکان دادن',
+                    sub: 'گوشی را تکان دهید تا تصویر صفحه + توضیح ارسال شود',
+                    on: _shakeReport,
+                    onChange: _toggleShakeReport,
                   ),
                 ],
               ),
@@ -1419,7 +1579,7 @@ class _DevicesSheet extends StatelessWidget {
               ListRow(
                 icon: 'layers',
                 iconColor: c.accent,
-                title: 'نسخهٔ سیستم‌عامل',
+                title: 'نسخه سیستم‌عامل',
                 sub: osVer,
               ),
               const _Sep(),
@@ -1433,7 +1593,7 @@ class _DevicesSheet extends StatelessWidget {
               ListRow(
                 icon: 'sparkles',
                 iconColor: c.success,
-                title: 'نسخهٔ اپ',
+                title: 'نسخه اپ',
                 sub: _versionLabel(),
               ),
             ],
@@ -1441,7 +1601,7 @@ class _DevicesSheet extends StatelessWidget {
         ),
         const SizedBox(height: 14),
         Text(
-          'این اپ یک نشستِ واحد به این دستگاه می‌دهد؛ برای ابطال، از «خروج از حساب» در پایینِ صفحهٔ بیشتر استفاده کنید.',
+          'این اپ یک نشست واحد به این دستگاه می‌دهد؛ برای ابطال، از «خروج از حساب» در پایین صفحه بیشتر استفاده کنید.',
           style: TextStyle(
               fontFamily: T.family, fontSize: 12, color: c.tx3, height: 1.7),
         ),
@@ -1491,7 +1651,7 @@ class _CurrencyPickerSheet extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Text(
-          'این تنظیم مستقیماً روی ووکامرسِ فروشگاه اعمال می‌شود و واحدِ پولِ کلِ سایت را تغییر می‌دهد.',
+          'این تنظیم مستقیما روی ووکامرس فروشگاه اعمال می‌شود و واحد پول کل سایت را تغییر می‌دهد.',
           style: TextStyle(
               fontFamily: T.family, fontSize: 12, color: c.tx3, height: 1.7),
         ),
@@ -1539,94 +1699,6 @@ class _CurrencyRow extends StatelessWidget {
                     style: TextStyle(fontSize: 11.5, color: c.tx3),
                   ),
                 ],
-              ),
-            ),
-            if (selected) WcpIcon('check', size: 20, color: c.accent),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ════════════════════════════════════════════════════════════════
-// Chat-notification tone picker (ITEM 6) — pure local setting, no transport.
-// Mirrors the currency picker pattern: a pad-0 card of rows with a check on
-// the active choice + a one-line explainer.
-// ════════════════════════════════════════════════════════════════
-class _ChatSoundPickerSheet extends StatelessWidget {
-  const _ChatSoundPickerSheet({
-    required this.current,
-    required this.onPick,
-  });
-
-  final String current;
-  final ValueChanged<String> onPick;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.c;
-    final List<String> keys = _chatSoundNames.keys.toList();
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        WcpCard(
-          pad: 0,
-          child: Column(
-            children: [
-              for (int i = 0; i < keys.length; i++) ...[
-                if (i > 0) Divider(height: 1, color: c.line),
-                _ChatSoundRow(
-                  label: _chatSoundLabel(keys[i]),
-                  silent: keys[i] == 'silent',
-                  selected: keys[i] == current,
-                  onTap: () => onPick(keys[i]),
-                ),
-              ],
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-        Text(
-          'این فقط صدای اعلان گفتگو را تعیین می‌کند و روی سایر اعلان‌ها اثری ندارد.',
-          style: TextStyle(
-              fontFamily: T.family, fontSize: 12, color: c.tx3, height: 1.7),
-        ),
-      ],
-    );
-  }
-}
-
-class _ChatSoundRow extends StatelessWidget {
-  const _ChatSoundRow({
-    required this.label,
-    required this.silent,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool silent;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.c;
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-        child: Row(
-          children: [
-            WcpIcon(silent ? 'bell' : 'bolt', size: 19, color: c.tx3),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                label,
-                style: const TextStyle(
-                    fontSize: 14.5, fontWeight: FontWeight.w700),
               ),
             ),
             if (selected) WcpIcon('check', size: 20, color: c.accent),
